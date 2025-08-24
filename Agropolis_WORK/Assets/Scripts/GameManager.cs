@@ -97,6 +97,58 @@ public class GameManager : MonoBehaviour
         }
     }
 
+    // ===== Nombres visibles por casilla (índice 0..39) =====
+    static readonly string[] AGRO_NOMBRES_V1 = new string[40]
+    {
+    // 0..9
+    "Start/Meta",     // 0  (Start)
+    "Av. Central",    // 1  (Propiedad)
+    "Evento",         // 2  (Evento)
+    "Calle Mercado",  // 3  (Propiedad)
+    "Premio",         // 4  (Premio)
+    "Calle Río",      // 5  (Propiedad)
+    "Planta Reciclaje", // 6  (Infra)
+    "Calle Flores",   // 7  (Propiedad)
+    "Impuesto",       // 8  (Tax)
+    "Calle Sol",      // 9  (Propiedad)
+
+    // 10..19
+    "Cárcel",         // 10 (Visita / regla especial)
+    "Calle Parque",   // 11 (Propiedad)
+    "Robo",           // 12 (Robbery)
+    "Calle Puerto",   // 13 (Propiedad)
+    "Planta Eólica",  // 14 (Infra)
+    "Calle Bosque",   // 15 (Propiedad)
+    "Evento",         // 16 (Evento)
+    "Av. Mercado",    // 17 (Propiedad)
+    "Premio",         // 18 (Premio)
+    "Calle Mayor",    // 19 (Propiedad)
+
+    // 20..29
+    "Descanso",       // 20 (Rest)
+    "Calle Lago",     // 21 (Propiedad)
+    "Robo",           // 22 (Robbery)
+    "Av. Montaña",    // 23 (Propiedad)
+    "Planta Solar",   // 24 (Infra)
+    "Calle Real",     // 25 (Propiedad)
+    "Evento",         // 26 (Evento)
+    "Calle Corona",   // 27 (Propiedad)
+    "Construcción",   // 28 (Construction)
+    "Av. Castillo",   // 29 (Propiedad)
+
+    // 30..39
+    "Ir a Cárcel",    // 30 (GoToJail)
+    "Calle Reina",    // 31 (Propiedad)
+    "Planta Hidro",   // 32 (Infra)
+    "Av. Libertad",   // 33 (Propiedad)
+    "Evento",         // 34 (Evento)
+    "Calle Patria",   // 35 (Propiedad)
+    "Mantenimiento",  // 36 (Maintenance)
+    "Av. Imperio",    // 37 (Propiedad)
+    "Robo",           // 38 (Robbery)
+    "Calle Emperador" // 39 (Propiedad) ← pedido explícito
+    };
+
 
     PlayerToken p1, p2;
     int turno = 0; // 0 = jugador 1, 1 = jugador 2
@@ -121,11 +173,10 @@ public class GameManager : MonoBehaviour
         ownerByTile = new int[board.TileCount];
         for (int i = 0; i < ownerByTile.Length; i++) ownerByTile[i] = -1;
         BuildDefaultProps();  // ← crea la tabla de propiedades (nombres/grupos)
-
+        ApplyTileLabels();    // ← pinta los nombres en cada casilla
 
         UpdateTurnUI();
         HighlightCurrentOnly();
-
     }
 
     void OnDestroy()
@@ -235,7 +286,6 @@ public class GameManager : MonoBehaviour
                         $"Jugador {turno + 1} pagó renta ${rent} a Jugador {duenoActual + 1}" +
                         (info != null ? $" ({info.nombre})" : "") +
                         (parCompleto ? " (x2 por grupo)" : "") + ".";
-
                 }
 
                 // Si es tu propia propiedad, no pasa nada
@@ -272,7 +322,6 @@ public class GameManager : MonoBehaviour
                         break;
                     }
 
-
                 case 8:
                     {
                         // Impuesto: pagas al banco
@@ -293,6 +342,7 @@ public class GameManager : MonoBehaviour
                         yield return new WaitUntil(() => esperandoDecision == false);
                         break;
                     }
+
                 case 20:
                     {
                         // Descanso: pequeño bonus
@@ -318,7 +368,7 @@ public class GameManager : MonoBehaviour
         }
 
         turno = 1 - turno;
-       
+
         UpdateTurnUI();
         if (btnTirar) btnTirar.interactable = true;
     }
@@ -368,6 +418,7 @@ public class GameManager : MonoBehaviour
         if (lastCurrent) { lastCurrent.ClearHighlight(); lastCurrent = null; }
         if (lastPreview) { lastPreview.ClearHighlight(); lastPreview = null; }
     }
+
     void UpdateMoneyUI()
     {
         if (txtP1) txtP1.text = $"J1: ${dinero1}";
@@ -391,6 +442,7 @@ public class GameManager : MonoBehaviour
         UpdateMoneyUI();
         return true;
     }
+
     // Paga "amount" al banco. Si no alcanza, paga lo que tenga (queda en 0).
     void PayToBank(int player, int amount)
     {
@@ -468,4 +520,28 @@ public class GameManager : MonoBehaviour
         return ownerByTile[idx] == owner && ownerByTile[mate] == owner;
     }
 
+    // --- NUEVO: aplica los nombres a cada casilla (fuera de Start) ---
+    void ApplyTileLabels()
+    {
+        int n = board.TileCount;
+        for (int i = 0; i < n && i < AGRO_NOMBRES_V1.Length; i++)
+        {
+            var t = board.GetTile(i);
+            if (t) t.SetLabel(AGRO_NOMBRES_V1[i]);
+        }
+    }
+
+    // Muestra "00..39" en el hijo "Label" de cada casilla (útil para debug, NO llamar en Start)
+    void ShowTileIndices()
+    {
+        for (int i = 0; i < board.TileCount; i++)
+        {
+            var tile = board.GetTile(i);
+            if (!tile) continue;
+
+            var label = tile.transform.Find("Label")?.GetComponent<TMPro.TextMeshPro>();
+            if (label)
+                label.text = i.ToString("00"); // 00, 01, 02...
+        }
+    }
 }

@@ -1,4 +1,5 @@
 ﻿using UnityEngine;
+using TMPro;
 
 public enum TileType
 {
@@ -26,6 +27,8 @@ public class Tile : MonoBehaviour
     public SpriteRenderer borderSR;  // marco (raíz)
     public SpriteRenderer fillSR;    // relleno (hijo "Fill")
     public SpriteRenderer ownerSR;   // marca de dueño (hijo "Owner")
+    [Header("Label (opcional)")]
+    public TMP_Text label;
 
     [Header("Outline")]
     public float specialOutlineScale = 0.90f; // tamaño del relleno cuando hay marco
@@ -118,4 +121,15 @@ public class Tile : MonoBehaviour
     {
         if (ownerSR) ownerSR.enabled = false;
     }
+    // Cambia el texto del rótulo "Label" de la casilla
+    public void SetLabel(string textValue)
+    {
+        if (!label)
+        {
+            var t = transform.Find("Label");
+            if (t) label = t.GetComponent<TMP_Text>();
+        }
+        if (label) label.text = textValue;
+    }
+
 }
