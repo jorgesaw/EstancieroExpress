@@ -38,6 +38,29 @@ public class GameManager : MonoBehaviour
     public int impuestoMonto = 80;   // ← NUEVO
     public int restBonus = 50;   // ← NUEVO (Descanso)
 
+    [Header("Cárcel")]
+    public int bailCost = 120;     // fianza
+    int[] skipTurns = new int[2];  // turnos a saltar por jugador (J1=0, J2=1)
+
+    [Header("Infraestructura (especial comprable) — opción B")]
+    public int[] infraIndices = { 6, 14, 24, 32 };
+    public string[] infraNombres = { "Planta Reciclaje", "Parque Eólico", "Planta Solar", "Planta Hidroeléctrica" };
+    public int[] infraPrecios = { 140, 160, 180, 200 };
+    public int[] infraRentasBase = { 28, 32, 36, 40 };
+
+    int InfraSlotOf(int idx)
+    {
+        for (int i = 0; i < infraIndices.Length; i++)
+            if (infraIndices[i] == idx) return i;
+        return -1;
+    }
+    int CountInfraOwned(int owner)
+    {
+        int c = 0;
+        for (int i = 0; i < infraIndices.Length; i++)
+            if (ownerByTile.Length > infraIndices[i] && ownerByTile[infraIndices[i]] == owner) c++;
+        return c;
+    }
 
     int[] ownerByTile; // -1 = sin dueño, 0 = J1, 1 = J2
                        // ----- Tabla de propiedades (índices impares) -----
@@ -79,6 +102,15 @@ public class GameManager : MonoBehaviour
         "Rojo","Rojo",
         "Azul","Azul"
     };
+        // Valores finales del README, alineados con el array 'indices' (1,3,5,...,39)
+        int[] precios = {
+    100, 120, 140, 160, 180, 200, 220, 240, 260, 280,
+    300, 320, 350, 400, 420, 440, 460, 480, 500, 520
+};
+        int[] rentas = {
+    20, 25, 28, 32, 36, 40, 44, 48, 52, 56,
+    60, 64, 70, 80, 84, 88, 92, 96, 100, 104
+};
 
         props = new PropertyInfo[indices.Length];
         for (int i = 0; i < indices.Length; i++)
@@ -91,8 +123,9 @@ public class GameManager : MonoBehaviour
                 index = indices[i],
                 grupo = g,
                 nombre = $"{g} {par}",
-                precio = demoPropertyPrice,  // por ahora usamos los valores actuales
-                renta = demoPropertyRent
+                precio = precios[i],
+                renta = rentas[i]
+
             };
         }
     }
@@ -137,16 +170,17 @@ public class GameManager : MonoBehaviour
     "Av. Castillo",   // 29 (Propiedad)
 
     // 30..39
-    "Ir a Cárcel",    // 30 (GoToJail)
-    "Calle Reina",    // 31 (Propiedad)
-    "Planta Hidro",   // 32 (Infra)
-    "Av. Libertad",   // 33 (Propiedad)
-    "Evento",         // 34 (Evento)
-    "Calle Patria",   // 35 (Propiedad)
-    "Mantenimiento",  // 36 (Maintenance)
-    "Av. Imperio",    // 37 (Propiedad)
-    "Robo",           // 38 (Robbery)
-    "Calle Emperador" // 39 (Propiedad) ← pedido explícito
+"Ir a Cárcel",           // 30 (GoToJail)
+"Calle Reina",           // 31 (Propiedad)
+"Planta Hidroeléctrica", // 32 (Infra)
+"Calle Rubí",            // 33 (Propiedad)
+"Evento",                // 34 (Evento)
+"Av. Granada",           // 35 (Propiedad)
+"Mantenimiento",         // 36 (Maintenance)
+"Calle Marina",          // 37 (Propiedad)
+"Robo",                  // 38 (Robbery)
+"Av. Emperador"          // 39 (Propiedad)
+
     };
 
 
@@ -187,8 +221,20 @@ public class GameManager : MonoBehaviour
     void OnTirar()
     {
         if (IsMovingAny()) return;
+
+        // ¿Debe saltar el turno por cárcel?
+        if (skipTurns[turno] > 0)
+        {
+            skipTurns[turno]--;
+            if (txtEstado) txtEstado.text = $"Jugador {turno + 1} pierde el turno (cárcel).";
+            turno = 1 - turno;
+            UpdateTurnUI();
+            return;
+        }
+
         StartCoroutine(RollAndMove());
     }
+
 
     bool IsMovingAny()
     {
@@ -226,6 +272,20 @@ public class GameManager : MonoBehaviour
         HighlightTile(board.GetTile(player.boardIndex), currentColor, ref lastCurrent);
         // === Compra/propiedad (v1) ===
         var landedTile = board.GetTile(player.boardIndex);
+        // Ir a Cárcel (30): ir a 10 y perder 1 turno (sin opción de fianza aquí)
+        if (landedTile && landedTile.type == TileType.GoToJail)
+        {
+            player.TeleportTo(board.PathPositions[10], 10);
+            skipTurns[turno] = 1;
+            if (txtEstado) txtEstado.text = $"Jugador {turno + 1} va a Cárcel y perderá 1 turno.";
+
+            // Termina el turno inmediatamente
+            turno = 1 - turno;
+            UpdateTurnUI();
+            if (btnTirar) btnTirar.interactable = true;
+            yield break;
+        }
+
         if (landedTile && (landedTile.index % 2 == 1)) // solo impares = propiedades
         {
             int idx = landedTile.index;
@@ -279,19 +339,74 @@ public class GameManager : MonoBehaviour
                     var info = GetProp(idx);
                     int baseRent = info?.renta ?? demoPropertyRent;
                     bool parCompleto = OwnsPair(duenoActual, idx);
-                    int rent = parCompleto ? baseRent * 2 : baseRent;
+                    int rent = parCompleto ? Mathf.RoundToInt(baseRent * 1.5f) : baseRent;
 
                     PayPlayerToPlayer(turno, duenoActual, rent);
                     if (txtEstado) txtEstado.text =
                         $"Jugador {turno + 1} pagó renta ${rent} a Jugador {duenoActual + 1}" +
                         (info != null ? $" ({info.nombre})" : "") +
-                        (parCompleto ? " (x2 por grupo)" : "") + ".";
+                        (parCompleto ? " (+50% por monopolio)" : "") + ".";
                 }
 
                 // Si es tu propia propiedad, no pasa nada
             }
 
         }
+        // --- Infraestructura (pares especiales comprables) ---
+        if (landedTile && landedTile.type == TileType.Infrastructure)
+        {
+            int idx = landedTile.index;
+            int slot = InfraSlotOf(idx);
+            if (slot >= 0)
+            {
+                int duenoActual = ownerByTile[idx];
+
+                if (duenoActual == -1)
+                {
+                    // Ofrecer compra
+                    esperandoDecision = true;
+                    string nom = infraNombres[slot];
+                    int price = infraPrecios[slot];
+                    int baseRent = infraRentasBase[slot];
+
+                    modal.Show(
+                        $"¿Comprar {nom}?",
+                        $"Precio ${price} • Renta base ${baseRent}\n(La renta escala por cantidad total de infra que posea el dueño)",
+                        "Comprar",
+                        "Pasar",
+                        onYes: () =>
+                        {
+                            if (SpendMoney(turno, price))
+                            {
+                                ownerByTile[idx] = turno;
+                                var colorDueno = (turno == 0) ? ownerColorP1 : ownerColorP2;
+                                landedTile.SetOwnerMark(colorDueno, true);
+                                if (txtEstado) txtEstado.text = $"Jugador {turno + 1} compró {nom} por ${price}.";
+                            }
+                            else
+                            {
+                                Debug.Log("No alcanza el dinero para infraestructura.");
+                            }
+                            esperandoDecision = false;
+                        },
+                        onNo: () => { esperandoDecision = false; }
+                    );
+                    yield return new WaitUntil(() => esperandoDecision == false);
+                }
+                else if (duenoActual != turno)
+                {
+                    // Opción B: renta = rentaBaseDeEsaCasilla × (infra poseídas por el dueño)
+                    int owned = CountInfraOwned(duenoActual);
+                    int rent = infraRentasBase[slot] * Mathf.Max(1, owned);
+                    PayPlayerToPlayer(turno, duenoActual, rent);
+
+                    if (txtEstado) txtEstado.text =
+                        $"Jugador {turno + 1} pagó renta ${rent} de infraestructura a Jugador {duenoActual + 1} ({infraNombres[slot]}, posee {owned}).";
+                }
+                // Si es tuya, no pasa nada
+            }
+        }
+
         // --- Especiales pares simples (v1) ---
         if (landedTile && landedTile.index % 2 == 0 && landedTile.index != 0) // pares, excluye Start (0)
         {
@@ -307,7 +422,7 @@ public class GameManager : MonoBehaviour
                         if (txtEstado) txtEstado.text =
                             $"Jugador {turno + 1} cobró premio ${premioMonto} (casilla {idx}).";
 
-                        // Mostrar modal informativo y esperar que lo cierre
+                        // Modal informativo y esperar que lo cierre
                         esperandoDecision = true;
                         modal.Show(
                             "Premio",
@@ -318,7 +433,6 @@ public class GameManager : MonoBehaviour
                             onNo: () => { esperandoDecision = false; }
                         );
                         yield return new WaitUntil(() => esperandoDecision == false);
-
                         break;
                     }
 
@@ -338,6 +452,38 @@ public class GameManager : MonoBehaviour
                             "Cerrar",
                             onYes: () => { esperandoDecision = false; },
                             onNo: () => { esperandoDecision = false; }
+                        );
+                        yield return new WaitUntil(() => esperandoDecision == false);
+                        break;
+                    }
+
+                case 10:
+                    {
+                        // Cárcel: elegir fianza o perder 1 turno
+                        esperandoDecision = true;
+                        modal.Show(
+                            "Cárcel",
+                            $"Pagar fianza ${bailCost} o perder 1 turno",
+                            "Pagar",
+                            "Perder turno",
+                            onYes: () =>
+                            {
+                                if (SpendMoney(turno, bailCost))
+                                {
+                                    if (txtEstado) txtEstado.text = $"Jugador {turno + 1} pagó fianza y sigue jugando.";
+                                }
+                                else
+                                {
+                                    skipTurns[turno] = 1;
+                                    if (txtEstado) txtEstado.text = $"No alcanzó para la fianza. Jugador {turno + 1} pierde 1 turno.";
+                                }
+                                esperandoDecision = false;
+                            },
+                            onNo: () =>
+                            {
+                                skipTurns[turno] = 1;
+                                esperandoDecision = false;
+                            }
                         );
                         yield return new WaitUntil(() => esperandoDecision == false);
                         break;
@@ -364,8 +510,10 @@ public class GameManager : MonoBehaviour
                         break;
                     }
 
+                    // Otros pares (22, 26, 28, 30, 32, 34, 36, 38) se manejan en otros flujos o aún no implementados aquí.
             }
         }
+
 
         turno = 1 - turno;
 
