@@ -42,6 +42,25 @@ public class GameManager : MonoBehaviour
     public int bailCost = 120;     // fianza
     int[] skipTurns = new int[2];  // turnos a saltar por jugador (J1=0, J2=1)
 
+    [Header("Eventos (config v1) — 40% catástrofes / 60% estándar")]
+    // Pool estándar reescalado a 60% total:
+    // (Premio 12, Multa 9, Mover±3 9, Intercambio 6, Descuento 9, Buff 7, Debuff 8)
+    public int evPremio = 12;
+    public int evMulta = 9;
+    public int evMover = 9;
+    public int evIntercambio = 6;
+    public int evDescuento = 9;
+    public int evBuff = 7;
+    public int evDebuff = 8;
+
+    // Anti-tilt:
+    // - Cooldown global: no dos catástrofes seguidas globalmente
+    // - Cooldown por jugador: un jugador no puede recibir catástrofe en turnos consecutivos
+    bool globalCatCooldown = false;   // si true, la próxima "Carta" forzará estándar
+    int[] playerCatCooldown = new int[2]; // 1 = bloquea catástrofe para ese jugador en su próxima carta
+
+    enum StdEventType { Premio, Multa, Mover, Intercambio, Descuento, Buff, Debuff }
+
     [Header("Infraestructura (especial comprable) — opción B")]
     public int[] infraIndices = { 6, 14, 24, 32 };
     public string[] infraNombres = { "Planta Reciclaje", "Parque Eólico", "Planta Solar", "Planta Hidroeléctrica" };
@@ -240,6 +259,308 @@ public class GameManager : MonoBehaviour
     {
         return (p1 && p1.isMoving) || (p2 && p2.isMoving);
     }
+    // Sortea un evento estándar según los pesos configurados (suman 60)
+    StdEventType PickStandardEvent()
+    {
+        int total = evPremio + evMulta + evMover + evIntercambio + evDescuento + evBuff + evDebuff;
+        int r = Random.Range(0, total);
+        int acc = 0;
+
+        acc += evPremio; if (r < acc) return StdEventType.Premio;
+        acc += evMulta; if (r < acc) return StdEventType.Multa;
+        acc += evMover; if (r < acc) return StdEventType.Mover;
+        acc += evIntercambio; if (r < acc) return StdEventType.Intercambio;
+        acc += evDescuento; if (r < acc) return StdEventType.Descuento;
+        acc += evBuff; if (r < acc) return StdEventType.Buff;
+        // lo que quede
+        return StdEventType.Debuff;
+    }
+
+    // Resolver el evento ESTÁNDAR (por ahora implementamos Premio y Multa)
+    IEnumerator ResolveStandardEvent(int jugador, StdEventType t)
+    {
+        switch (t)
+        {
+            case StdEventType.Premio:
+                {
+                    AddMoney(jugador, premioMonto);
+                    if (txtEstado) txtEstado.text = $"Jugador {jugador + 1} recibe Premio +${premioMonto}.";
+                    bool done = false;
+                    modal.Show("Premio", $"+${premioMonto}", "OK", "Cerrar", onYes: () => done = true, onNo: () => done = true);
+                    yield return new WaitUntil(() => done);
+                    break;
+                }
+            case StdEventType.Multa:
+                {
+                    PayToBank(jugador, premioMonto);
+                    if (txtEstado) txtEstado.text = $"Jugador {jugador + 1} paga Multa ${premioMonto}.";
+                    bool done = false;
+                    modal.Show("Multa", $"-${premioMonto}", "OK", "Cerrar", onYes: () => done = true, onNo: () => done = true);
+                    yield return new WaitUntil(() => done);
+                    break;
+                }
+            case StdEventType.Mover:
+                {
+                    // 50/50: +3 o -3
+                    int delta = (Random.Range(0, 2) == 0) ? 3 : -3;
+                    var tok = (jugador == 0) ? p1 : p2;
+
+                    int idxAntes = tok.boardIndex;
+                    int destino = Wrap(tok.boardIndex + delta);
+                    string txt = (delta > 0) ? $"+{delta}" : delta.ToString();
+
+                    // Bono por Start solo si avanza (igual que al tirar dado)
+                    if (delta > 0)
+                    {
+                        int total = board.TileCount;
+                        if (idxAntes + delta >= total) AddMoney(jugador, startBonus);
+                    }
+
+                    // Mover (v1: teleport + resolver destino)
+                    tok.TeleportTo(board.PathPositions[destino], destino);
+                    HighlightCurrentOnly();
+
+                    if (txtEstado) txtEstado.text = $"Jugador {jugador + 1} se mueve {txt} (Evento).";
+
+                    // Pequeño modal informativo (opcional)
+                    bool ack = false;
+                    modal.Show("Mover", $"Te moviste {txt}.", "OK", "Seguir",
+                        onYes: () => ack = true, onNo: () => ack = true);
+                    yield return new WaitUntil(() => ack);
+
+                    // ===== Resolver la casilla de destino =====
+                    var tile = board.GetTile(destino);
+                    if (!tile) break;
+
+                    // --- Propiedad (comprar / pagar renta con monopolio +50%) ---
+                    if (tile.type == TileType.Property)
+                    {
+                        int idx = tile.index;
+                        int dueno = ownerByTile[idx];
+
+                        if (dueno == -1)
+                        {
+                            // Ofrecer compra
+                            esperandoDecision = true;
+                            var info = GetProp(idx);
+                            int price = info?.precio ?? demoPropertyPrice;
+                            int rent = info?.renta ?? demoPropertyRent;
+
+                            string titulo = info != null ? $"¿Comprar {info.nombre}?" : "¿Comprar propiedad?";
+                            string cuerpo = $"Precio ${price} • Renta ${rent}";
+
+                            modal.Show(
+                                titulo, cuerpo, "Comprar", "Pasar",
+                                onYes: () =>
+                                {
+                                    if (SpendMoney(jugador, price))
+                                    {
+                                        ownerByTile[idx] = jugador;
+                                        var color = (jugador == 0) ? ownerColorP1 : ownerColorP2;
+                                        tile.SetOwnerMark(color, true);
+                                        if (txtEstado) txtEstado.text = $"Jugador {jugador + 1} compró {(info != null ? info.nombre : $"la casilla {idx}")} por ${price}.";
+                                    }
+                                    else
+                                    {
+                                        Debug.Log("No alcanza el dinero.");
+                                    }
+                                    esperandoDecision = false;
+                                },
+                                onNo: () => { esperandoDecision = false; }
+                            );
+                            yield return new WaitUntil(() => esperandoDecision == false);
+                        }
+                        else if (dueno != jugador)
+                        {
+                            var info = GetProp(idx);
+                            int baseRent = info?.renta ?? demoPropertyRent;
+                            bool parCompleto = OwnsPair(dueno, idx);
+                            int rent = parCompleto ? Mathf.RoundToInt(baseRent * 1.5f) : baseRent;
+
+                            PayPlayerToPlayer(jugador, dueno, rent);
+                            if (txtEstado) txtEstado.text =
+                                $"Jugador {jugador + 1} pagó renta ${rent} a Jugador {dueno + 1}" +
+                                (info != null ? $" ({info.nombre})" : "") +
+                                (parCompleto ? " (+50% por monopolio)" : "") + ".";
+                        }
+                        break;
+                    }
+
+                    // --- Infraestructura (comprable; renta = base × cantidad poseída por el dueño) ---
+                    if (tile.type == TileType.Infrastructure)
+                    {
+                        int idx = tile.index;
+                        int slot = InfraSlotOf(idx);
+                        if (slot >= 0)
+                        {
+                            int dueno = ownerByTile[idx];
+
+                            if (dueno == -1)
+                            {
+                                esperandoDecision = true;
+                                string nom = infraNombres[slot];
+                                int price = infraPrecios[slot];
+                                int baseRent = infraRentasBase[slot];
+
+                                modal.Show(
+                                    $"¿Comprar {nom}?",
+                                    $"Precio ${price} • Renta base ${baseRent}\n(La renta escala por cantidad total de infra que posea el dueño)",
+                                    "Comprar", "Pasar",
+                                    onYes: () =>
+                                    {
+                                        if (SpendMoney(jugador, price))
+                                        {
+                                            ownerByTile[idx] = jugador;
+                                            var color = (jugador == 0) ? ownerColorP1 : ownerColorP2;
+                                            tile.SetOwnerMark(color, true);
+                                            if (txtEstado) txtEstado.text = $"Jugador {jugador + 1} compró {nom} por ${price}.";
+                                        }
+                                        else
+                                        {
+                                            Debug.Log("No alcanza el dinero para infraestructura.");
+                                        }
+                                        esperandoDecision = false;
+                                    },
+                                    onNo: () => { esperandoDecision = false; }
+                                );
+                                yield return new WaitUntil(() => esperandoDecision == false);
+                            }
+                            else if (dueno != jugador)
+                            {
+                                int owned = CountInfraOwned(dueno);
+                                int rent = infraRentasBase[slot] * Mathf.Max(1, owned);
+                                PayPlayerToPlayer(jugador, dueno, rent);
+
+                                if (txtEstado) txtEstado.text =
+                                    $"Jugador {jugador + 1} pagó renta ${rent} de infraestructura a Jugador {dueno + 1} ({infraNombres[slot]}, posee {owned}).";
+                            }
+                        }
+                        break;
+                    }
+
+                    // --- Evento (permite encadenar, con nuestros cooldowns) ---
+                    if (tile.type == TileType.Event)
+                    {
+                        bool forceStandard = globalCatCooldown || (playerCatCooldown[jugador] > 0);
+                        bool isCat = false;
+                        if (!forceStandard)
+                        {
+                            int rollCat = Random.Range(0, 100);
+                            isCat = (rollCat < 40);
+                        }
+
+                        if (isCat)
+                        {
+                            globalCatCooldown = true;
+                            playerCatCooldown[jugador] = 1;
+                            yield return ResolveCatastrophe(jugador);
+                        }
+                        else
+                        {
+                            if (globalCatCooldown) globalCatCooldown = false;
+                            if (playerCatCooldown[jugador] > 0) playerCatCooldown[jugador] = 0;
+
+                            var ev2 = PickStandardEvent();
+                            yield return ResolveStandardEvent(jugador, ev2);
+                        }
+                        break;
+                    }
+
+                    // --- Premios/Impuestos/Descanso (pares) ---
+                    if (tile.type == TileType.Prize)
+                    {
+                        AddMoney(jugador, premioMonto);
+                        bool done = false;
+                        modal.Show("Premio", $"+${premioMonto}", "OK", "Cerrar",
+                            onYes: () => done = true, onNo: () => done = true);
+                        yield return new WaitUntil(() => done);
+                        if (txtEstado) txtEstado.text = $"Jugador {jugador + 1} cobró premio ${premioMonto} (casilla {tile.index}).";
+                        break;
+                    }
+                    if (tile.type == TileType.Tax)
+                    {
+                        PayToBank(jugador, impuestoMonto);
+                        bool done = false;
+                        modal.Show("Impuesto", $"${impuestoMonto}", "OK", "Cerrar",
+                            onYes: () => done = true, onNo: () => done = true);
+                        yield return new WaitUntil(() => done);
+                        if (txtEstado) txtEstado.text = $"Jugador {jugador + 1} pagó impuesto ${impuestoMonto} (casilla {tile.index}).";
+                        break;
+                    }
+                    if (tile.type == TileType.Rest)
+                    {
+                        AddMoney(jugador, restBonus);
+                        bool done = false;
+                        modal.Show("Descanso", $"+${restBonus}", "OK", "Cerrar",
+                            onYes: () => done = true, onNo: () => done = true);
+                        yield return new WaitUntil(() => done);
+                        if (txtEstado) txtEstado.text = $"Jugador {jugador + 1} descansó y cobró ${restBonus} (casilla {tile.index}).";
+                        break;
+                    }
+
+                    // --- Cárcel / Ir a Cárcel ---
+                    if (tile.type == TileType.GoToJail)
+                    {
+                        tok.TeleportTo(board.PathPositions[10], 10);
+                        skipTurns[jugador] = 1;
+                        if (txtEstado) txtEstado.text = $"Jugador {jugador + 1} va a Cárcel y perderá 1 turno.";
+                        break;
+                    }
+                    if (tile.type == TileType.Jail)
+                    {
+                        bool done = false;
+                        modal.Show(
+                            "Cárcel",
+                            $"Pagar fianza ${bailCost} o perder 1 turno",
+                            "Pagar",
+                            "Perder turno",
+                            onYes: () =>
+                            {
+                                if (SpendMoney(jugador, bailCost))
+                                {
+                                    if (txtEstado) txtEstado.text = $"Jugador {jugador + 1} pagó fianza y sigue.";
+                                }
+                                else
+                                {
+                                    skipTurns[jugador] = 1;
+                                    if (txtEstado) txtEstado.text = $"No alcanzó para la fianza. Jugador {jugador + 1} pierde 1 turno.";
+                                }
+                                done = true;
+                            },
+                            onNo: () => { skipTurns[jugador] = 1; done = true; }
+                        );
+                        yield return new WaitUntil(() => done);
+                        break;
+                    }
+
+                    // (Robo / Construcción / Mantenimiento los añadimos en pasos siguientes)
+                    break;
+                }
+
+            default:
+                {
+                    // Placeholder: iremos implementando estos en micro-pasos
+                    bool done = false;
+                    modal.Show("Evento", "Efecto en preparación (próximo paso).", "OK", "Cerrar",
+                        onYes: () => done = true, onNo: () => done = true);
+                    yield return new WaitUntil(() => done);
+                    break;
+                }
+        }
+        yield break;
+    }
+
+    // Resolver Catástrofe (placeholder por ahora, con cooldowns listos)
+    IEnumerator ResolveCatastrophe(int jugador)
+    {
+        // Aquí luego agregamos: severidad (L/M/S) + tipo (Inundación/Sequía/Tormenta/Granizo) y efectos
+        if (txtEstado) txtEstado.text = $"Jugador {jugador + 1} — Catástrofe (placeholder).";
+        bool done = false;
+        modal.Show("Catástrofe", "Se aplicará en el siguiente paso (implementación).", "OK", "Cerrar",
+            onYes: () => done = true, onNo: () => done = true);
+        yield return new WaitUntil(() => done);
+        yield break;
+    }
 
     IEnumerator RollAndMove()
     {
@@ -406,6 +727,39 @@ public class GameManager : MonoBehaviour
                 // Si es tuya, no pasa nada
             }
         }
+        // === Evento (2,16,26,34): 40% Catástrofe / 60% Estándar con anti-tilt ===
+        if (landedTile && landedTile.type == TileType.Event)
+        {
+            int jugador = turno;
+
+            // ¿Catástrofe o estándar?
+            bool forceStandard = globalCatCooldown || (playerCatCooldown[jugador] > 0);
+            bool isCat = false;
+
+            if (!forceStandard)
+            {
+                // 40% catástrofe, 60% estándar
+                int rollCat = Random.Range(0, 100);
+                isCat = (rollCat < 40);
+            }
+
+            if (isCat)
+            {
+                // Catástrofe → activar cooldowns
+                globalCatCooldown = true;           // la próxima carta (de quien sea) será estándar
+                playerCatCooldown[jugador] = 1;     // este jugador no puede recibir catástrofe en su próxima carta
+                yield return ResolveCatastrophe(jugador);
+            }
+            else
+            {
+                // Estándar → limpiar cooldowns si estaban activos
+                if (globalCatCooldown) globalCatCooldown = false;
+                if (playerCatCooldown[jugador] > 0) playerCatCooldown[jugador] = 0;
+
+                var ev = PickStandardEvent();
+                yield return ResolveStandardEvent(jugador, ev);
+            }
+        }
 
         // --- Especiales pares simples (v1) ---
         if (landedTile && landedTile.index % 2 == 0 && landedTile.index != 0) // pares, excluye Start (0)
@@ -515,10 +869,16 @@ public class GameManager : MonoBehaviour
         }
 
 
+        int prevJugador = turno;  // el que acaba de jugar
         turno = 1 - turno;
+
+        // Consumir cooldown por jugador (si tenía bloqueo de catástrofe, se limpia ahora)
+        if (playerCatCooldown[prevJugador] > 0)
+            playerCatCooldown[prevJugador] = 0;
 
         UpdateTurnUI();
         if (btnTirar) btnTirar.interactable = true;
+
     }
 
     void UpdateTurnUI()
