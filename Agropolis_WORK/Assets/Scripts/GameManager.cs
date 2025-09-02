@@ -1,4 +1,5 @@
 ﻿using System.Collections;
+using System.Collections.Generic; // ← NUEVO
 using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
@@ -41,6 +42,21 @@ public class GameManager : MonoBehaviour
     [Header("Cárcel")]
     public int bailCost = 120;     // fianza
     int[] skipTurns = new int[2];  // turnos a saltar por jugador (J1=0, J2=1)
+
+    [Header("Power-ups")]
+    public int discountPercent = 30;       // -30% a la PRÓXIMA compra
+    bool[] hasDiscount = new bool[2];      // slot por jugador (J1=0, J2=1)
+
+    // Precio efectivo si hay descuento
+    int EffectivePrice(int jugador, int basePrice)
+    {
+        if (hasDiscount[jugador])
+            return Mathf.RoundToInt(basePrice * (100 - discountPercent) / 100f);
+        return basePrice;
+    }
+
+    // Consumir descuento tras usarlo
+    void ConsumeDiscount(int jugador) { hasDiscount[jugador] = false; }
 
     [Header("Eventos (config v1) — 40% catástrofes / 60% estándar")]
     // Pool estándar reescalado a 60% total:
@@ -340,25 +356,30 @@ public class GameManager : MonoBehaviour
 
                         if (dueno == -1)
                         {
-                            // Ofrecer compra
-                            esperandoDecision = true;
                             var info = GetProp(idx);
                             int price = info?.precio ?? demoPropertyPrice;
                             int rent = info?.renta ?? demoPropertyRent;
 
-                            string titulo = info != null ? $"¿Comprar {info.nombre}?" : "¿Comprar propiedad?";
-                            string cuerpo = $"Precio ${price} • Renta ${rent}";
+                            int finalPrice = EffectivePrice(jugador, price);
+                            bool tieneDesc = hasDiscount[jugador];
 
+                            string titulo = info != null ? $"¿Comprar {info.nombre}?" : "¿Comprar propiedad?";
+                            string cuerpo = tieneDesc
+                                ? $"Precio ${price} → con descuento −{discountPercent}%: ${finalPrice}\nRenta ${rent}"
+                                : $"Precio ${price} • Renta ${rent}";
+
+                            esperandoDecision = true;
                             modal.Show(
                                 titulo, cuerpo, "Comprar", "Pasar",
                                 onYes: () =>
                                 {
-                                    if (SpendMoney(jugador, price))
+                                    if (SpendMoney(jugador, finalPrice))
                                     {
+                                        if (tieneDesc) ConsumeDiscount(jugador);
                                         ownerByTile[idx] = jugador;
                                         var color = (jugador == 0) ? ownerColorP1 : ownerColorP2;
                                         tile.SetOwnerMark(color, true);
-                                        if (txtEstado) txtEstado.text = $"Jugador {jugador + 1} compró {(info != null ? info.nombre : $"la casilla {idx}")} por ${price}.";
+                                        if (txtEstado) txtEstado.text = $"Jugador {jugador + 1} compró {(info != null ? info.nombre : $"la casilla {idx}")} por ${finalPrice}.";
                                     }
                                     else
                                     {
@@ -397,23 +418,29 @@ public class GameManager : MonoBehaviour
 
                             if (dueno == -1)
                             {
-                                esperandoDecision = true;
                                 string nom = infraNombres[slot];
                                 int price = infraPrecios[slot];
                                 int baseRent = infraRentasBase[slot];
 
+                                int finalPrice = EffectivePrice(jugador, price);
+                                bool tieneDesc = hasDiscount[jugador];
+
+                                esperandoDecision = true;
                                 modal.Show(
                                     $"¿Comprar {nom}?",
-                                    $"Precio ${price} • Renta base ${baseRent}\n(La renta escala por cantidad total de infra que posea el dueño)",
+                                    (tieneDesc
+                                        ? $"Precio ${price} → con descuento −{discountPercent}%: ${finalPrice}\nRenta base ${baseRent}\n(La renta escala por cantidad total de infra del dueño)"
+                                        : $"Precio ${price} • Renta base ${baseRent}\n(La renta escala por cantidad total de infra del dueño)"),
                                     "Comprar", "Pasar",
                                     onYes: () =>
                                     {
-                                        if (SpendMoney(jugador, price))
+                                        if (SpendMoney(jugador, finalPrice))
                                         {
+                                            if (tieneDesc) ConsumeDiscount(jugador);
                                             ownerByTile[idx] = jugador;
                                             var color = (jugador == 0) ? ownerColorP1 : ownerColorP2;
                                             tile.SetOwnerMark(color, true);
-                                            if (txtEstado) txtEstado.text = $"Jugador {jugador + 1} compró {nom} por ${price}.";
+                                            if (txtEstado) txtEstado.text = $"Jugador {jugador + 1} compró {nom} por ${finalPrice}.";
                                         }
                                         else
                                         {
@@ -536,6 +563,100 @@ public class GameManager : MonoBehaviour
                     // (Robo / Construcción / Mantenimiento los añadimos en pasos siguientes)
                     break;
                 }
+            case StdEventType.Intercambio:
+                {
+                    // Rival: elegimos aleatoriamente ENTRE los jugadores que tengan al menos 1 propiedad.
+                    // Esto funciona con 2 jugadores HOY y escalará a 3–4 mañana sin tocar esta lógica.
+
+                    // 1) Mis propiedades (solo casillas impares = propiedades)
+                    List<int> misProps = new List<int>();
+                    for (int i = 1; i < ownerByTile.Length; i += 2)
+                        if (ownerByTile[i] == jugador) misProps.Add(i);
+
+                    // 2) Propiedades por oponente (clave = ownerId)
+                    Dictionary<int, List<int>> propsPorOponente = new Dictionary<int, List<int>>();
+                    for (int i = 1; i < ownerByTile.Length; i += 2)
+                    {
+                        int own = ownerByTile[i];
+                        if (own >= 0 && own != jugador)
+                        {
+                            if (!propsPorOponente.TryGetValue(own, out var lista))
+                            {
+                                lista = new List<int>();
+                                propsPorOponente[own] = lista;
+                            }
+                            lista.Add(i);
+                        }
+                    }
+
+                    // 3) Fallback: si yo NO tengo o NADIE rival tiene propiedades → Premio +$80
+                    if (misProps.Count == 0 || propsPorOponente.Count == 0)
+                    {
+                        int premioFallback = 80;
+                        AddMoney(jugador, premioFallback);
+                        if (txtEstado) txtEstado.text = $"Intercambio no posible. Jugador {jugador + 1} recibe premio +${premioFallback}.";
+                        bool ok = false;
+                        modal.Show("Premio", $"+${premioFallback}", "OK", "Cerrar",
+                            onYes: () => ok = true, onNo: () => ok = true);
+                        yield return new WaitUntil(() => ok);
+                        break;
+                    }
+
+                    // 4) Elegir rival al azar ENTRE quienes tengan propiedades
+                    var rivalesConProps = new List<int>(propsPorOponente.Keys);
+                    int rival = rivalesConProps[Random.Range(0, rivalesConProps.Count)];
+
+                    // 5) Elegir 1 propiedad mía y 1 del rival al azar
+                    int idxA = misProps[Random.Range(0, misProps.Count)];
+                    var susProps = propsPorOponente[rival];
+                    int idxB = susProps[Random.Range(0, susProps.Count)];
+
+                    var propA = GetProp(idxA);
+                    var propB = GetProp(idxB);
+                    string nombreA = propA != null ? propA.nombre : $"Prop {idxA}";
+                    string nombreB = propB != null ? propB.nombre : $"Prop {idxB}";
+
+                    // 6) Intercambiar dueños
+                    ownerByTile[idxA] = rival;
+                    ownerByTile[idxB] = jugador;
+
+                    // 7) Actualizar marquitas visuales (nota: con >2 jugadores habrá que mapear color por ownerId)
+                    var tA = board.GetTile(idxA);
+                    if (tA) tA.SetOwnerMark(rival == 0 ? ownerColorP1 : ownerColorP2, true);
+                    var tB = board.GetTile(idxB);
+                    if (tB) tB.SetOwnerMark(jugador == 0 ? ownerColorP1 : ownerColorP2, true);
+
+                    if (txtEstado) txtEstado.text =
+                    $"Intercambio: Jugador {jugador + 1} da {nombreA} <-> recibe {nombreB} de Jugador {rival + 1}.";
+
+
+                    bool done = false;
+                    modal.Show("Intercambio", $"Entregaste: {nombreA}\nRecibiste: {nombreB}", "OK", "Cerrar",
+                        onYes: () => done = true, onNo: () => done = true);
+                    yield return new WaitUntil(() => done);
+                    break;
+                }
+            case StdEventType.Descuento:
+                {
+                    if (!hasDiscount[jugador])
+                    {
+                        hasDiscount[jugador] = true;
+                        if (txtEstado) txtEstado.text = $"Jugador {jugador + 1} obtuvo Descuento −{discountPercent}% en la próxima compra.";
+                        bool ok = false;
+                        modal.Show("Power-up: Descuento", $"Se aplicará automáticamente a tu próxima compra.\nValor: −{discountPercent}%", "OK", "Cerrar",
+                            onYes: () => ok = true, onNo: () => ok = true);
+                        yield return new WaitUntil(() => ok);
+                    }
+                    else
+                    {
+                        // Ya tenía uno: no se acumula
+                        bool ok = false;
+                        modal.Show("Descuento ya activo", "Ya tienes un Descuento guardado.\n(No se acumula ni se renueva)", "OK", "Cerrar",
+                            onYes: () => ok = true, onNo: () => ok = true);
+                        yield return new WaitUntil(() => ok);
+                    }
+                    break;
+                }
 
             default:
                 {
@@ -618,9 +739,14 @@ public class GameManager : MonoBehaviour
                 var info = GetProp(idx);
                 int price = info?.precio ?? demoPropertyPrice;
                 int rent = info?.renta ?? demoPropertyRent;
+                int finalPrice = EffectivePrice(turno, price);
+                bool tieneDesc = hasDiscount[turno];
 
                 string titulo = info != null ? $"¿Comprar {info.nombre}?" : "¿Comprar propiedad?";
-                string cuerpo = $"Precio ${price} • Renta ${rent}";
+                string cuerpo = tieneDesc
+    ? $"Precio ${price} → con descuento −{discountPercent}%: ${finalPrice}\nRenta ${rent}"
+    : $"Precio ${price} • Renta ${rent}";
+
 
 
                 modal.Show(
@@ -631,12 +757,14 @@ public class GameManager : MonoBehaviour
                     onYes: () =>
                     {
                         // intenta pagar
-                        if (SpendMoney(turno, price))
+                        if (SpendMoney(turno, finalPrice))
                         {
+                            if (tieneDesc) ConsumeDiscount(turno);
+                            // (lo demás queda igual)
                             ownerByTile[idx] = turno;
                             var colorDueno = (turno == 0) ? ownerColorP1 : ownerColorP2;
                             landedTile.SetOwnerMark(colorDueno, true);
-                            if (txtEstado) txtEstado.text = $"Jugador {turno + 1} compró {(info != null ? info.nombre : $"la casilla {idx}")} por ${price}.";
+                            if (txtEstado) txtEstado.text = $"Jugador {turno + 1} compró {(info != null ? info.nombre : $"la casilla {idx}")} por ${finalPrice}.";
                         }
 
                         else
@@ -689,29 +817,35 @@ public class GameManager : MonoBehaviour
                     string nom = infraNombres[slot];
                     int price = infraPrecios[slot];
                     int baseRent = infraRentasBase[slot];
+                    int finalPrice = EffectivePrice(turno, price);
+                    bool tieneDesc = hasDiscount[turno];
 
                     modal.Show(
-                        $"¿Comprar {nom}?",
-                        $"Precio ${price} • Renta base ${baseRent}\n(La renta escala por cantidad total de infra que posea el dueño)",
-                        "Comprar",
-                        "Pasar",
-                        onYes: () =>
-                        {
-                            if (SpendMoney(turno, price))
-                            {
-                                ownerByTile[idx] = turno;
-                                var colorDueno = (turno == 0) ? ownerColorP1 : ownerColorP2;
-                                landedTile.SetOwnerMark(colorDueno, true);
-                                if (txtEstado) txtEstado.text = $"Jugador {turno + 1} compró {nom} por ${price}.";
-                            }
-                            else
-                            {
-                                Debug.Log("No alcanza el dinero para infraestructura.");
-                            }
-                            esperandoDecision = false;
-                        },
-                        onNo: () => { esperandoDecision = false; }
-                    );
+    $"¿Comprar {nom}?",
+    tieneDesc
+        ? $"Precio ${price} -> con descuento -{discountPercent}%: ${finalPrice}\nRenta base ${baseRent}\n(La renta escala por cantidad total de infra del dueno)"
+        : $"Precio ${price} • Renta base ${baseRent}\n(La renta escala por cantidad total de infra del dueno)",
+    "Comprar",
+    "Pasar",
+    onYes: () =>
+    {
+        if (SpendMoney(turno, finalPrice))
+        {
+            if (tieneDesc) ConsumeDiscount(turno);
+            ownerByTile[idx] = turno;
+            var colorDueno = (turno == 0) ? ownerColorP1 : ownerColorP2;
+            landedTile.SetOwnerMark(colorDueno, true);
+            if (txtEstado) txtEstado.text = $"Jugador {turno + 1} compró {nom} por ${finalPrice}.";
+        }
+        else
+        {
+            Debug.Log("No alcanza el dinero para infraestructura.");
+        }
+        esperandoDecision = false;
+    },
+    onNo: () => { esperandoDecision = false; }
+);
+
                     yield return new WaitUntil(() => esperandoDecision == false);
                 }
                 else if (duenoActual != turno)
