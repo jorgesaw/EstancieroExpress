@@ -18,6 +18,8 @@ public class GameManager : MonoBehaviour
     public ModalPrompt modal;   // ← referencia al modal
     public TMP_Text txtP1;   // ← NUEVO
     public TMP_Text txtP2;   // ← NUEVO
+    public ToastUI toast;   // ← arrastra aquí el objeto "Toast" de la escena
+    public RobberyUI robberyUI;
 
     [Header("Highlight")]
     public Color currentColor = new Color(0.40f, 0.74f, 1f, 1f);
@@ -36,8 +38,16 @@ public class GameManager : MonoBehaviour
 
     [Header("Especiales (demo)")]
     public int premioMonto = 100;
+    public int multaMonto = 100;     // ← NUEVO: monto de la Multa (evento estándar)
     public int impuestoMonto = 80;   // ← NUEVO
     public int restBonus = 50;   // ← NUEVO (Descanso)
+
+    [Header("Mantenimiento")]
+    public int maintenanceCostPerProperty = 10; // costo por propiedad poseída
+
+    [Header("Robo")]
+    public int robberyWin = 80;   // lo que ganas si te sale la carta “Robar”
+    public int robberyLose = 60;  // lo que pierdes si te sale “Te roban”
 
     [Header("Cárcel")]
     public int bailCost = 120;     // fianza
@@ -77,12 +87,68 @@ public class GameManager : MonoBehaviour
 
     enum StdEventType { Premio, Multa, Mover, Intercambio, Descuento, Buff, Debuff }
 
+    // ----- Buff/Debuff de renta (propiedades) -----
+    [Header("Buff/Debuff Renta")]
+    public int rentModDurationLaps = 1;    // dura 1 vuelta
+
+    enum RentMod { None, Buff, Debuff }
+    RentMod[] rentMod = new RentMod[2];    // por jugador (J1=0, J2=1)
+    int[] rentModLapsLeft = new int[2];
+
+    // Activadores
+    void GiveRentBuff(int player)
+    {
+        rentMod[player] = RentMod.Buff;
+        rentModLapsLeft[player] = rentModDurationLaps;
+        ShowToast($"Jugador {player + 1}: +25% de renta por {rentModDurationLaps} vuelta(s)", 2.5f);
+    }
+
+    void GiveRentDebuff(int player)
+    {
+        rentMod[player] = RentMod.Debuff;
+        rentModLapsLeft[player] = rentModDurationLaps;
+        ShowToast($"Jugador {player + 1}: -25% de renta por {rentModDurationLaps} vuelta(s)", 2.5f);
+    }
+
+    // Multiplicador según dueño que cobra
+    float GetRentModMultiplierForOwner(int owner)
+    {
+        return rentMod[owner] == RentMod.Buff ? 1.25f :
+               rentMod[owner] == RentMod.Debuff ? 0.75f : 1f;
+    }
+
+    // Tick de duración: se descuenta cuando el JUGADOR pasa por Start
+    void AdvanceRentModLapIfPassedStart(int player, bool pasoPorStart)
+    {
+        if (!pasoPorStart) return;
+        if (rentModLapsLeft[player] > 0)
+        {
+            rentModLapsLeft[player]--;
+            if (rentModLapsLeft[player] == 0) rentMod[player] = RentMod.None;
+        }
+    }
+
+    // Etiqueta breve para el mensaje de estado
+    string RentModTag(int owner)
+    {
+        return rentMod[owner] == RentMod.Buff ? " (+25% buff)" :
+               rentMod[owner] == RentMod.Debuff ? " (-25% debuff)" : "";
+    }
+
     [Header("Infraestructura (especial comprable) — opción B")]
     public int[] infraIndices = { 6, 14, 24, 32 };
     public string[] infraNombres = { "Planta Reciclaje", "Parque Eólico", "Planta Solar", "Planta Hidroeléctrica" };
     public int[] infraPrecios = { 140, 160, 180, 200 };
     public int[] infraRentasBase = { 28, 32, 36, 40 };
 
+    int CountOwnedProps(int owner)
+    {
+        int c = 0;
+        // Solo impares = propiedades
+        for (int i = 1; i < ownerByTile.Length; i += 2)
+            if (ownerByTile[i] == owner) c++;
+        return c;
+    }
     int InfraSlotOf(int idx)
     {
         for (int i = 0; i < infraIndices.Length; i++)
@@ -300,21 +366,27 @@ public class GameManager : MonoBehaviour
             case StdEventType.Premio:
                 {
                     AddMoney(jugador, premioMonto);
-                    if (txtEstado) txtEstado.text = $"Jugador {jugador + 1} recibe Premio +${premioMonto}.";
+                    ToastStatus($"Jugador {jugador + 1} recibe Premio +${premioMonto}.", 3f);
+
                     bool done = false;
-                    modal.Show("Premio", $"+${premioMonto}", "OK", "Cerrar", onYes: () => done = true, onNo: () => done = true);
+                    modal.Show("Premio", $"+${premioMonto}", "OK", "Cerrar",
+                        onYes: () => done = true, onNo: () => done = true);
                     yield return new WaitUntil(() => done);
                     break;
                 }
+
             case StdEventType.Multa:
                 {
-                    PayToBank(jugador, premioMonto);
-                    if (txtEstado) txtEstado.text = $"Jugador {jugador + 1} paga Multa ${premioMonto}.";
+                    PayToBank(jugador, multaMonto);
+                    ToastStatus($"Jugador {jugador + 1} paga Multa ${multaMonto}.", 3f);
+
                     bool done = false;
-                    modal.Show("Multa", $"-${premioMonto}", "OK", "Cerrar", onYes: () => done = true, onNo: () => done = true);
+                    modal.Show("Multa", $"-${multaMonto}", "OK", "Cerrar",
+                        onYes: () => done = true, onNo: () => done = true);
                     yield return new WaitUntil(() => done);
                     break;
                 }
+
             case StdEventType.Mover:
                 {
                     // 50/50: +3 o -3
@@ -329,14 +401,18 @@ public class GameManager : MonoBehaviour
                     if (delta > 0)
                     {
                         int total = board.TileCount;
-                        if (idxAntes + delta >= total) AddMoney(jugador, startBonus);
+                        if (idxAntes + delta >= total)
+                        {
+                            AddMoney(jugador, startBonus);
+                            ToastStatus($"+${startBonus} por pasar Start", 2f);
+                        }
                     }
 
                     // Mover (v1: teleport + resolver destino)
                     tok.TeleportTo(board.PathPositions[destino], destino);
                     HighlightCurrentOnly();
 
-                    if (txtEstado) txtEstado.text = $"Jugador {jugador + 1} se mueve {txt} (Evento).";
+                    ToastStatus($"Jugador {jugador + 1} se mueve {txt} (Evento).", 2.5f);
 
                     // Pequeño modal informativo (opcional)
                     bool ack = false;
@@ -379,11 +455,11 @@ public class GameManager : MonoBehaviour
                                         ownerByTile[idx] = jugador;
                                         var color = (jugador == 0) ? ownerColorP1 : ownerColorP2;
                                         tile.SetOwnerMark(color, true);
-                                        if (txtEstado) txtEstado.text = $"Jugador {jugador + 1} compró {(info != null ? info.nombre : $"la casilla {idx}")} por ${finalPrice}.";
+                                        ToastStatus($"Jugador {jugador + 1} compró {(info != null ? info.nombre : $"la casilla {idx}")} por ${finalPrice}.", 3f);
                                     }
                                     else
                                     {
-                                        Debug.Log("No alcanza el dinero.");
+                                        ToastStatus("No alcanza el dinero para comprar.", 2.5f);
                                     }
                                     esperandoDecision = false;
                                 },
@@ -391,18 +467,29 @@ public class GameManager : MonoBehaviour
                             );
                             yield return new WaitUntil(() => esperandoDecision == false);
                         }
+                        // (PROPIEDADES) si el dueño es el rival, cobro renta v1
                         else if (dueno != jugador)
                         {
                             var info = GetProp(idx);
                             int baseRent = info?.renta ?? demoPropertyRent;
                             bool parCompleto = OwnsPair(dueno, idx);
-                            int rent = parCompleto ? Mathf.RoundToInt(baseRent * 1.5f) : baseRent;
+
+                            float r = parCompleto ? baseRent * 1.5f : baseRent;
+                            float mod = GetRentModMultiplierForOwner(dueno);   // +25% o -25% según el dueño
+                            r *= mod;
+                            int rent = Mathf.RoundToInt(r);
+
+                            // Toast con el desglose de PROPIEDADES (no infra)
+                            string monoTag = parCompleto ? " ×1.5 (monopolio)" : "";
+                            string modTag = mod > 1f ? " ×1.25 (buff)" : (mod < 1f ? " ×0.75 (debuff)" : "");
+                            ToastStatus($"Alquiler base ${baseRent}{monoTag}{modTag} = Total ${rent}", 3f);
 
                             PayPlayerToPlayer(jugador, dueno, rent);
-                            if (txtEstado) txtEstado.text =
-                                $"Jugador {jugador + 1} pagó renta ${rent} a Jugador {dueno + 1}" +
-                                (info != null ? $" ({info.nombre})" : "") +
-                                (parCompleto ? " (+50% por monopolio)" : "") + ".";
+                            ToastStatus(
+                                $"Jugador {jugador + 1} pagó renta ${rent} a Jugador {dueno + 1}"
+                                + (info != null ? $" ({info.nombre})" : ""),
+                                3f
+                            );
                         }
                         break;
                     }
@@ -440,11 +527,11 @@ public class GameManager : MonoBehaviour
                                             ownerByTile[idx] = jugador;
                                             var color = (jugador == 0) ? ownerColorP1 : ownerColorP2;
                                             tile.SetOwnerMark(color, true);
-                                            if (txtEstado) txtEstado.text = $"Jugador {jugador + 1} compró {nom} por ${finalPrice}.";
+                                            ToastStatus($"Jugador {jugador + 1} compró {nom} por ${finalPrice}.", 3f);
                                         }
                                         else
                                         {
-                                            Debug.Log("No alcanza el dinero para infraestructura.");
+                                            ToastStatus("No alcanza el dinero para infraestructura.", 2.5f);
                                         }
                                         esperandoDecision = false;
                                     },
@@ -455,11 +542,14 @@ public class GameManager : MonoBehaviour
                             else if (dueno != jugador)
                             {
                                 int owned = CountInfraOwned(dueno);
-                                int rent = infraRentasBase[slot] * Mathf.Max(1, owned);
-                                PayPlayerToPlayer(jugador, dueno, rent);
+                                int baseRent = infraRentasBase[slot];
+                                int rent = baseRent * Mathf.Max(1, owned);
 
-                                if (txtEstado) txtEstado.text =
-                                    $"Jugador {jugador + 1} pagó renta ${rent} de infraestructura a Jugador {dueno + 1} ({infraNombres[slot]}, posee {owned}).";
+                                // Toast con el desglose de INFRA
+                                ToastStatus($"Infra: base ${baseRent} × posee {owned} = ${rent}", 3f);
+
+                                PayPlayerToPlayer(jugador, dueno, rent);
+                                ToastStatus($"Jugador {jugador + 1} pagó renta ${rent} de infraestructura a Jugador {dueno + 1} ({infraNombres[slot]}, posee {owned}).", 3f);
                             }
                         }
                         break;
@@ -497,40 +587,48 @@ public class GameManager : MonoBehaviour
                     if (tile.type == TileType.Prize)
                     {
                         AddMoney(jugador, premioMonto);
+                        ToastStatus($"Jugador {jugador + 1} cobró premio +${premioMonto} (casilla {tile.index}).", 3f);
+
                         bool done = false;
                         modal.Show("Premio", $"+${premioMonto}", "OK", "Cerrar",
                             onYes: () => done = true, onNo: () => done = true);
                         yield return new WaitUntil(() => done);
-                        if (txtEstado) txtEstado.text = $"Jugador {jugador + 1} cobró premio ${premioMonto} (casilla {tile.index}).";
                         break;
                     }
                     if (tile.type == TileType.Tax)
                     {
                         PayToBank(jugador, impuestoMonto);
+                        ToastStatus($"Jugador {jugador + 1} pagó impuesto ${impuestoMonto} (casilla {tile.index}).", 3f);
+
                         bool done = false;
                         modal.Show("Impuesto", $"${impuestoMonto}", "OK", "Cerrar",
                             onYes: () => done = true, onNo: () => done = true);
                         yield return new WaitUntil(() => done);
-                        if (txtEstado) txtEstado.text = $"Jugador {jugador + 1} pagó impuesto ${impuestoMonto} (casilla {tile.index}).";
                         break;
                     }
                     if (tile.type == TileType.Rest)
                     {
                         AddMoney(jugador, restBonus);
+                        ToastStatus($"Jugador {jugador + 1} descansó y cobró ${restBonus} (casilla {tile.index}).", 3f);
+
                         bool done = false;
                         modal.Show("Descanso", $"+${restBonus}", "OK", "Cerrar",
                             onYes: () => done = true, onNo: () => done = true);
                         yield return new WaitUntil(() => done);
-                        if (txtEstado) txtEstado.text = $"Jugador {jugador + 1} descansó y cobró ${restBonus} (casilla {tile.index}).";
                         break;
                     }
-
+                    // --- Robo ---
+                    if (tile.type == TileType.Robbery)
+                    {
+                        yield return ResolveRobbery(jugador);
+                        break;
+                    }
                     // --- Cárcel / Ir a Cárcel ---
                     if (tile.type == TileType.GoToJail)
                     {
                         tok.TeleportTo(board.PathPositions[10], 10);
                         skipTurns[jugador] = 1;
-                        if (txtEstado) txtEstado.text = $"Jugador {jugador + 1} va a Cárcel y perderá 1 turno.";
+                        ToastStatus($"Jugador {jugador + 1} va a Cárcel y perderá 1 turno.", 3f);
                         break;
                     }
                     if (tile.type == TileType.Jail)
@@ -545,16 +643,21 @@ public class GameManager : MonoBehaviour
                             {
                                 if (SpendMoney(jugador, bailCost))
                                 {
-                                    if (txtEstado) txtEstado.text = $"Jugador {jugador + 1} pagó fianza y sigue.";
+                                    ToastStatus($"Jugador {jugador + 1} pagó fianza ${bailCost} y sigue jugando.", 3f);
                                 }
                                 else
                                 {
                                     skipTurns[jugador] = 1;
-                                    if (txtEstado) txtEstado.text = $"No alcanzó para la fianza. Jugador {jugador + 1} pierde 1 turno.";
+                                    ToastStatus($"No alcanzó para la fianza. Jugador {jugador + 1} pierde 1 turno.", 3f);
                                 }
                                 done = true;
                             },
-                            onNo: () => { skipTurns[jugador] = 1; done = true; }
+                            onNo: () =>
+                            {
+                                skipTurns[jugador] = 1;
+                                ToastStatus($"Jugador {jugador + 1} perdió 1 turno (cárcel).", 3f);
+                                done = true;
+                            }
                         );
                         yield return new WaitUntil(() => done);
                         break;
@@ -563,6 +666,7 @@ public class GameManager : MonoBehaviour
                     // (Robo / Construcción / Mantenimiento los añadimos en pasos siguientes)
                     break;
                 }
+
             case StdEventType.Intercambio:
                 {
                     // Rival: elegimos aleatoriamente ENTRE los jugadores que tengan al menos 1 propiedad.
@@ -594,7 +698,8 @@ public class GameManager : MonoBehaviour
                     {
                         int premioFallback = 80;
                         AddMoney(jugador, premioFallback);
-                        if (txtEstado) txtEstado.text = $"Intercambio no posible. Jugador {jugador + 1} recibe premio +${premioFallback}.";
+                        ToastStatus($"Intercambio no posible. Jugador {jugador + 1} recibe premio +${premioFallback}.", 3f);
+
                         bool ok = false;
                         modal.Show("Premio", $"+${premioFallback}", "OK", "Cerrar",
                             onYes: () => ok = true, onNo: () => ok = true);
@@ -626,9 +731,7 @@ public class GameManager : MonoBehaviour
                     var tB = board.GetTile(idxB);
                     if (tB) tB.SetOwnerMark(jugador == 0 ? ownerColorP1 : ownerColorP2, true);
 
-                    if (txtEstado) txtEstado.text =
-                    $"Intercambio: Jugador {jugador + 1} da {nombreA} <-> recibe {nombreB} de Jugador {rival + 1}.";
-
+                    ToastStatus($"Intercambio: Jugador {jugador + 1} da {nombreA} ↔ recibe {nombreB} de Jugador {rival + 1}.", 3f);
 
                     bool done = false;
                     modal.Show("Intercambio", $"Entregaste: {nombreA}\nRecibiste: {nombreB}", "OK", "Cerrar",
@@ -636,25 +739,55 @@ public class GameManager : MonoBehaviour
                     yield return new WaitUntil(() => done);
                     break;
                 }
+
             case StdEventType.Descuento:
                 {
                     if (!hasDiscount[jugador])
                     {
                         hasDiscount[jugador] = true;
-                        if (txtEstado) txtEstado.text = $"Jugador {jugador + 1} obtuvo Descuento −{discountPercent}% en la próxima compra.";
+                        ToastStatus($"Jugador {jugador + 1} obtuvo Descuento −{discountPercent}% en la próxima compra.", 3f);
+
                         bool ok = false;
-                        modal.Show("Power-up: Descuento", $"Se aplicará automáticamente a tu próxima compra.\nValor: −{discountPercent}%", "OK", "Cerrar",
+                        modal.Show("Power-up: Descuento",
+                            $"Se aplicará automáticamente a tu próxima compra.\nValor: −{discountPercent}%",
+                            "OK", "Cerrar",
                             onYes: () => ok = true, onNo: () => ok = true);
                         yield return new WaitUntil(() => ok);
                     }
                     else
                     {
-                        // Ya tenía uno: no se acumula
+                        ToastStatus("Descuento ya activo: no se acumula ni se renueva.", 3f);
+
                         bool ok = false;
-                        modal.Show("Descuento ya activo", "Ya tienes un Descuento guardado.\n(No se acumula ni se renueva)", "OK", "Cerrar",
+                        modal.Show("Descuento ya activo",
+                            "Ya tienes un Descuento guardado.\n(No se acumula ni se renueva)", "OK", "Cerrar",
                             onYes: () => ok = true, onNo: () => ok = true);
                         yield return new WaitUntil(() => ok);
                     }
+                    break;
+                }
+
+            case StdEventType.Buff:
+                {
+                    GiveRentBuff(jugador); // ya toastea adentro
+                    bool ok = false;
+                    modal.Show("Buff de renta",
+                        $"+25% en tus propiedades por {rentModDurationLaps} vuelta.",
+                        "OK", "Cerrar",
+                        onYes: () => ok = true, onNo: () => ok = true);
+                    yield return new WaitUntil(() => ok);
+                    break;
+                }
+
+            case StdEventType.Debuff:
+                {
+                    GiveRentDebuff(jugador); // ya toastea adentro
+                    bool ok = false;
+                    modal.Show("Debuff de renta",
+                        $"-25% en tus propiedades por {rentModDurationLaps} vuelta.",
+                        "OK", "Cerrar",
+                        onYes: () => ok = true, onNo: () => ok = true);
+                    yield return new WaitUntil(() => ok);
                     break;
                 }
 
@@ -671,11 +804,53 @@ public class GameManager : MonoBehaviour
         yield break;
     }
 
+    // --- Robo: UI de 3 cartas + lógica simple ---
+    IEnumerator ResolveRobbery(int jugador)
+    {
+        int rival = (jugador == 0) ? 1 : 0;
+        bool done = false;
+
+        // Muestra la UI con 3 cartas. El callback nos da 0/1/2 según la carta elegida.
+        robberyUI.Show(
+            "Robo",
+            "Elige una carta:",
+            "Robar +" + robberyWin,   // Carta A
+            "Nada",                   // Carta B
+            "Te roban -" + robberyLose, // Carta C
+            (pick) =>
+            {
+                switch (pick)
+                {
+                    case 0: // Robar al rival
+                        PayPlayerToPlayer(rival, jugador, robberyWin);
+                        ToastStatus($"Jugador {jugador + 1} robó ${robberyWin} a Jugador {rival + 1}.", 3f);
+                        break;
+
+                    case 1: // Nada
+                        ToastStatus("Nada pasó.", 2f);
+                        break;
+
+                    case 2: // Te roban
+                        PayPlayerToPlayer(jugador, rival, robberyLose);
+                        ToastStatus($"A Jugador {jugador + 1} le robaron ${robberyLose}.", 3f);
+                        break;
+
+                    default: // Cerrar sin elegir
+                        ToastStatus("Robo cancelado.", 2f);
+                        break;
+                }
+
+                done = true;
+            }
+        );
+
+        yield return new WaitUntil(() => done);
+    }
+
     // Resolver Catástrofe (placeholder por ahora, con cooldowns listos)
     IEnumerator ResolveCatastrophe(int jugador)
     {
-        // Aquí luego agregamos: severidad (L/M/S) + tipo (Inundación/Sequía/Tormenta/Granizo) y efectos
-        if (txtEstado) txtEstado.text = $"Jugador {jugador + 1} — Catástrofe (placeholder).";
+        ToastStatus($"Jugador {jugador + 1} — Catástrofe (placeholder).", 2.5f);
         bool done = false;
         modal.Show("Catástrofe", "Se aplicará en el siguiente paso (implementación).", "OK", "Cerrar",
             onYes: () => done = true, onNo: () => done = true);
@@ -706,8 +881,13 @@ public class GameManager : MonoBehaviour
         bool pasoPorStart = (idxAntes + roll) >= totalTiles; // si “cruzó” el 0
         if (pasoPorStart)
         {
-            AddMoney(turno, startBonus); // usa tu helper y refresca la UI
+            AddMoney(turno, startBonus);
+            ShowToast($"+${startBonus} por pasar Start", 2f);
         }
+
+        AdvanceRentModLapIfPassedStart(turno, pasoPorStart);
+
+
 
         // Actualiza resaltado a la posición final
         ClearHighlights();
@@ -719,7 +899,7 @@ public class GameManager : MonoBehaviour
         {
             player.TeleportTo(board.PathPositions[10], 10);
             skipTurns[turno] = 1;
-            if (txtEstado) txtEstado.text = $"Jugador {turno + 1} va a Cárcel y perderá 1 turno.";
+            ToastStatus($"Jugador {turno + 1} fue enviado a Cárcel. Pierde 1 turno.", 3f);
 
             // Termina el turno inmediatamente
             turno = 1 - turno;
@@ -764,13 +944,13 @@ public class GameManager : MonoBehaviour
                             ownerByTile[idx] = turno;
                             var colorDueno = (turno == 0) ? ownerColorP1 : ownerColorP2;
                             landedTile.SetOwnerMark(colorDueno, true);
-                            if (txtEstado) txtEstado.text = $"Jugador {turno + 1} compró {(info != null ? info.nombre : $"la casilla {idx}")} por ${finalPrice}.";
+                            ToastStatus($"Jugador {turno + 1} compró {(info != null ? info.nombre : $"casilla {idx}")} por ${finalPrice}.", 3f);
                         }
 
                         else
                         {
                             // sin saldo: no compra (más adelante mostramos aviso bonito)
-                            Debug.Log("No alcanza el dinero.");
+                            ToastStatus("No alcanza el dinero para comprar.", 2.5f);
                         }
                         esperandoDecision = false;
                     },
@@ -788,13 +968,22 @@ public class GameManager : MonoBehaviour
                     var info = GetProp(idx);
                     int baseRent = info?.renta ?? demoPropertyRent;
                     bool parCompleto = OwnsPair(duenoActual, idx);
-                    int rent = parCompleto ? Mathf.RoundToInt(baseRent * 1.5f) : baseRent;
+
+                    float r = parCompleto ? baseRent * 1.5f : baseRent;
+                    r *= GetRentModMultiplierForOwner(duenoActual);   // +25% o -25% según el dueño
+                    int rent = Mathf.RoundToInt(r);
+
+                    // Toast con el desglose del alquiler
+                    string monoTag = parCompleto ? " ×1.5 (monopolio)" : "";
+                    float mod = GetRentModMultiplierForOwner(duenoActual);
+                    string modTag = mod > 1f ? " ×1.25 (buff)" : (mod < 1f ? " ×0.75 (debuff)" : "");
+                    ShowToast($"Alquiler base ${baseRent}{monoTag}{modTag} → Total ${rent}", 3f);
 
                     PayPlayerToPlayer(turno, duenoActual, rent);
                     if (txtEstado) txtEstado.text =
                         $"Jugador {turno + 1} pagó renta ${rent} a Jugador {duenoActual + 1}" +
                         (info != null ? $" ({info.nombre})" : "") +
-                        (parCompleto ? " (+50% por monopolio)" : "") + ".";
+                        (parCompleto ? " (+50% por monopolio)" : "") + RentModTag(duenoActual) + ".";
                 }
 
                 // Si es tu propia propiedad, no pasa nada
@@ -835,11 +1024,11 @@ public class GameManager : MonoBehaviour
             ownerByTile[idx] = turno;
             var colorDueno = (turno == 0) ? ownerColorP1 : ownerColorP2;
             landedTile.SetOwnerMark(colorDueno, true);
-            if (txtEstado) txtEstado.text = $"Jugador {turno + 1} compró {nom} por ${finalPrice}.";
+            ToastStatus($"Jugador {turno + 1} compró {nom} por ${finalPrice}.", 3f);
         }
         else
         {
-            Debug.Log("No alcanza el dinero para infraestructura.");
+            ToastStatus("No alcanza el dinero para infraestructura.", 2.5f);
         }
         esperandoDecision = false;
     },
@@ -861,6 +1050,13 @@ public class GameManager : MonoBehaviour
                 // Si es tuya, no pasa nada
             }
         }
+        // --- ROBO (12, 22, 38) ---
+        if (landedTile && landedTile.type == TileType.Robbery)
+        {
+            // Abre la UI de Robo y aplica el resultado
+            yield return ResolveRobbery(turno);
+        }
+
         // === Evento (2,16,26,34): 40% Catástrofe / 60% Estándar con anti-tilt ===
         if (landedTile && landedTile.type == TileType.Event)
         {
@@ -894,9 +1090,42 @@ public class GameManager : MonoBehaviour
                 yield return ResolveStandardEvent(jugador, ev);
             }
         }
+        // --- Mantenimiento (36) ---
+        else if (landedTile && landedTile.type == TileType.Maintenance)
+        {
+            int props = CountOwnedProps(turno);
+            int total = props * maintenanceCostPerProperty;
+
+            if (props <= 0)
+            {
+                // Sin propiedades: no cobres nada ni muestres modal
+                ToastStatus($"Jugador {turno + 1} no tiene propiedades. Mantenimiento $0.", 2.5f);
+            }
+            else
+            {
+                // Con propiedades: cobrar y mostrar el modal con el desglose
+                PayToBank(turno, total);
+
+                bool done = false;
+                modal.Show(
+                    "Mantenimiento",
+                    $"−${total}\n${maintenanceCostPerProperty} × {props} propiedades",
+                    "OK", "Cerrar",
+                    onYes: () => done = true,
+                    onNo: () => done = true
+                );
+                yield return new WaitUntil(() => done);
+
+                ToastStatus($"Jugador {turno + 1} pagó mantenimiento ${total} ({props} propiedades).", 3f);
+            }
+        } // ← cierre correcto del bloque de Mantenimiento
 
         // --- Especiales pares simples (v1) ---
-        if (landedTile && landedTile.index % 2 == 0 && landedTile.index != 0) // pares, excluye Start (0)
+        else if (landedTile && (
+                 landedTile.type == TileType.Prize ||
+                 landedTile.type == TileType.Tax ||
+                 landedTile.type == TileType.Rest ||
+                 landedTile.type == TileType.Jail))
         {
             int idx = landedTile.index;
 
@@ -905,75 +1134,65 @@ public class GameManager : MonoBehaviour
                 case 4:
                 case 18:
                     {
-                        // Cobrar
+                        // Cobrar premio
                         AddMoney(turno, premioMonto);
-                        if (txtEstado) txtEstado.text =
-                            $"Jugador {turno + 1} cobró premio ${premioMonto} (casilla {idx}).";
+                        ToastStatus($"Jugador {turno + 1} cobró premio ${premioMonto} (casilla {idx}).", 3f);
 
-                        // Modal informativo y esperar que lo cierre
-                        esperandoDecision = true;
+                        bool ok = false;
                         modal.Show(
-                            "Premio",
-                            $"${premioMonto}",
-                            "OK",
-                            "Cerrar",
-                            onYes: () => { esperandoDecision = false; },
-                            onNo: () => { esperandoDecision = false; }
+                            "Premio", $"${premioMonto}", "OK", "Cerrar",
+                            onYes: () => ok = true,
+                            onNo: () => ok = true
                         );
-                        yield return new WaitUntil(() => esperandoDecision == false);
+                        yield return new WaitUntil(() => ok);
                         break;
                     }
 
                 case 8:
                     {
-                        // Impuesto: pagas al banco
+                        // Impuesto
                         PayToBank(turno, impuestoMonto);
-                        if (txtEstado) txtEstado.text =
-                            $"Jugador {turno + 1} pagó impuesto ${impuestoMonto} (casilla {idx}).";
+                        ToastStatus($"Jugador {turno + 1} pagó impuesto ${impuestoMonto} (casilla {idx}).", 3f);
 
-                        // Modal informativo
-                        esperandoDecision = true;
+                        bool ok = false;
                         modal.Show(
-                            "Impuesto",
-                            $"${impuestoMonto}",
-                            "OK",
-                            "Cerrar",
-                            onYes: () => { esperandoDecision = false; },
-                            onNo: () => { esperandoDecision = false; }
+                            "Impuesto", $"${impuestoMonto}", "OK", "Cerrar",
+                            onYes: () => ok = true,
+                            onNo: () => ok = true
                         );
-                        yield return new WaitUntil(() => esperandoDecision == false);
+                        yield return new WaitUntil(() => ok);
                         break;
                     }
 
                 case 10:
                     {
                         // Cárcel: elegir fianza o perder 1 turno
-                        esperandoDecision = true;
+                        bool done = false;
                         modal.Show(
                             "Cárcel",
                             $"Pagar fianza ${bailCost} o perder 1 turno",
-                            "Pagar",
-                            "Perder turno",
+                            "Pagar", "Perder turno",
                             onYes: () =>
                             {
                                 if (SpendMoney(turno, bailCost))
                                 {
-                                    if (txtEstado) txtEstado.text = $"Jugador {turno + 1} pagó fianza y sigue jugando.";
+                                    ToastStatus($"Jugador {turno + 1} pagó fianza ${bailCost} y sigue jugando.", 3f);
                                 }
                                 else
                                 {
                                     skipTurns[turno] = 1;
-                                    if (txtEstado) txtEstado.text = $"No alcanzó para la fianza. Jugador {turno + 1} pierde 1 turno.";
+                                    ToastStatus($"No alcanzó para la fianza. Jugador {turno + 1} pierde 1 turno.", 3f);
                                 }
-                                esperandoDecision = false;
+                                done = true;
                             },
                             onNo: () =>
                             {
                                 skipTurns[turno] = 1;
-                                esperandoDecision = false;
+                                ToastStatus($"Jugador {turno + 1} perdió 1 turno (cárcel).", 3f);
+                                done = true;
                             }
                         );
-                        yield return new WaitUntil(() => esperandoDecision == false);
+                        yield return new WaitUntil(() => done);
                         break;
                     }
 
@@ -981,27 +1200,19 @@ public class GameManager : MonoBehaviour
                     {
                         // Descanso: pequeño bonus
                         AddMoney(turno, restBonus);
-                        if (txtEstado) txtEstado.text =
-                            $"Jugador {turno + 1} descansó y cobró ${restBonus} (casilla {idx}).";
+                        ToastStatus($"Jugador {turno + 1} descansó y cobró ${restBonus} (casilla {idx}).", 3f);
 
-                        // Modal informativo
-                        esperandoDecision = true;
+                        bool ok = false;
                         modal.Show(
-                            "Descanso",
-                            $"+${restBonus}",
-                            "OK",
-                            "Cerrar",
-                            onYes: () => { esperandoDecision = false; },
-                            onNo: () => { esperandoDecision = false; }
+                            "Descanso", $"+${restBonus}", "OK", "Cerrar",
+                            onYes: () => ok = true,
+                            onNo: () => ok = true
                         );
-                        yield return new WaitUntil(() => esperandoDecision == false);
+                        yield return new WaitUntil(() => ok);
                         break;
                     }
-
-                    // Otros pares (22, 26, 28, 30, 32, 34, 36, 38) se manejan en otros flujos o aún no implementados aquí.
             }
         }
-
 
         int prevJugador = turno;  // el que acaba de jugar
         turno = 1 - turno;
@@ -1066,7 +1277,16 @@ public class GameManager : MonoBehaviour
         if (txtP1) txtP1.text = $"J1: ${dinero1}";
         if (txtP2) txtP2.text = $"J2: ${dinero2}";
     }
-
+    // --- Toast helper ---
+    void ShowToast(string text, float time = 3f)
+    {
+        if (toast) toast.Show(text, time);
+    }
+    // Manda un mensaje al pop-up (toast) durante 'time' segundos
+    void ToastStatus(string msg, float time = 3f)
+    {
+        ShowToast(msg, time);
+    }
     // Helpers que usaremos después (compras, alquiler, etc.)
     public void AddMoney(int playerIndex, int amount)
     {
