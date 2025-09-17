@@ -36,6 +36,18 @@ public class GameManager : MonoBehaviour
     public Color ownerColorP1 = new Color(0.90f, 0.10f, 0.10f, 1f); // rojo
     public Color ownerColorP2 = new Color(0.20f, 0.40f, 1f, 1f);    // azul
 
+    [Header("Construcción")]
+    public int constructionCost = 150;     // cuánto cuesta mejorar
+    public float constructionMult = 1.75f; // renta x1.75
+
+    // Propiedades mejoradas por tile index (true = mejorada)
+    // (Guardamos por casilla, así la mejora “viaja” con la propiedad si se intercambia)
+    bool[] upgraded = new bool[40];
+
+    // Helpers
+    bool IsUpgraded(int idx) => (idx >= 0 && idx < upgraded.Length) && upgraded[idx];
+    float GetUpgradeMultForTile(int idx) => IsUpgraded(idx) ? constructionMult : 1f;
+
     [Header("Especiales (demo)")]
     public int premioMonto = 100;
     public int multaMonto = 100;     // ← NUEVO: monto de la Multa (evento estándar)
@@ -475,14 +487,22 @@ public class GameManager : MonoBehaviour
                             bool parCompleto = OwnsPair(dueno, idx);
 
                             float r = parCompleto ? baseRent * 1.5f : baseRent;
-                            float mod = GetRentModMultiplierForOwner(dueno);   // +25% o -25% según el dueño
+
+                            // NUEVO: multiplicador por mejora de construcción
+                            float up = GetUpgradeMultForTile(idx);
+                            r *= up;
+
+                            // Buff/Debuff del dueño que cobra
+                            float mod = GetRentModMultiplierForOwner(dueno);
                             r *= mod;
+
                             int rent = Mathf.RoundToInt(r);
 
-                            // Toast con el desglose de PROPIEDADES (no infra)
+                            // Toast con desglose
                             string monoTag = parCompleto ? " ×1.5 (monopolio)" : "";
+                            string upTag = up > 1f ? $" ×{up:0.##} (mejora)" : "";
                             string modTag = mod > 1f ? " ×1.25 (buff)" : (mod < 1f ? " ×0.75 (debuff)" : "");
-                            ToastStatus($"Alquiler base ${baseRent}{monoTag}{modTag} = Total ${rent}", 3f);
+                            ShowToast($"Alquiler base ${baseRent}{monoTag}{upTag}{modTag} → Total ${rent}", 3f);
 
                             PayPlayerToPlayer(jugador, dueno, rent);
                             ToastStatus(
@@ -491,6 +511,7 @@ public class GameManager : MonoBehaviour
                                 3f
                             );
                         }
+
                         break;
                     }
 
@@ -970,14 +991,20 @@ public class GameManager : MonoBehaviour
                     bool parCompleto = OwnsPair(duenoActual, idx);
 
                     float r = parCompleto ? baseRent * 1.5f : baseRent;
+                    float up = GetUpgradeMultForTile(idx);
+                    r *= up;
+
                     r *= GetRentModMultiplierForOwner(duenoActual);   // +25% o -25% según el dueño
                     int rent = Mathf.RoundToInt(r);
 
                     // Toast con el desglose del alquiler
                     string monoTag = parCompleto ? " ×1.5 (monopolio)" : "";
+                    string upTag = up > 1f ? $" ×{up:0.##} (mejora)" : "";   // ← NUEVO
                     float mod = GetRentModMultiplierForOwner(duenoActual);
                     string modTag = mod > 1f ? " ×1.25 (buff)" : (mod < 1f ? " ×0.75 (debuff)" : "");
-                    ShowToast($"Alquiler base ${baseRent}{monoTag}{modTag} → Total ${rent}", 3f);
+
+                    ShowToast($"Alquiler base ${baseRent}{monoTag}{upTag}{modTag} → Total ${rent}", 3f);
+
 
                     PayPlayerToPlayer(turno, duenoActual, rent);
                     if (txtEstado) txtEstado.text =
@@ -1039,14 +1066,23 @@ public class GameManager : MonoBehaviour
                 }
                 else if (duenoActual != turno)
                 {
-                    // Opción B: renta = rentaBaseDeEsaCasilla × (infra poseídas por el dueño)
                     int owned = CountInfraOwned(duenoActual);
-                    int rent = infraRentasBase[slot] * Mathf.Max(1, owned);
-                    PayPlayerToPlayer(turno, duenoActual, rent);
+                    int baseRent = infraRentasBase[slot];
 
+                    // aplicar buff/debuff del dueño que COBRA
+                    float mod = GetRentModMultiplierForOwner(duenoActual);
+                    int rent = Mathf.RoundToInt(baseRent * Mathf.Max(1, owned) * mod);
+
+                    // Toast con desglose (incluye buff/debuff si aplica)
+                    string modTag = mod > 1f ? " ×1.25 (buff)" : (mod < 1f ? " ×0.75 (debuff)" : "");
+                    ShowToast($"Infra: base ${baseRent} × posee {owned}{modTag} = ${rent}", 3f);
+
+                    PayPlayerToPlayer(turno, duenoActual, rent);
                     if (txtEstado) txtEstado.text =
-                        $"Jugador {turno + 1} pagó renta ${rent} de infraestructura a Jugador {duenoActual + 1} ({infraNombres[slot]}, posee {owned}).";
+                    $"Jugador {turno + 1} pagó renta ${rent} de infraestructura a Jugador {duenoActual + 1} ({infraNombres[slot]}, posee {owned})"
+                    + RentModTag(duenoActual) + ".";
                 }
+
                 // Si es tuya, no pasa nada
             }
         }
@@ -1055,6 +1091,57 @@ public class GameManager : MonoBehaviour
         {
             // Abre la UI de Robo y aplica el resultado
             yield return ResolveRobbery(turno);
+        }
+
+        // --- Construcción (28) ---
+        if (landedTile && landedTile.type == TileType.Construction)
+        {
+            // reunir propiedades propias NO mejoradas (impares)
+            var upgradables = new System.Collections.Generic.List<int>();
+            for (int i = 1; i < board.TileCount; i += 2)
+                if (ownerByTile[i] == turno && !IsUpgraded(i)) upgradables.Add(i);
+
+            if (upgradables.Count == 0)
+            {
+                bool ok = false;
+                modal.Show("Construcción",
+                    "No tienes propiedades para mejorar (o ya están mejoradas).",
+                    "OK", "Cerrar",
+                    onYes: () => ok = true, onNo: () => ok = true);
+                yield return new WaitUntil(() => ok);
+            }
+            else
+            {
+                int idxMej = upgradables[0]; // v1: tomamos la primera
+                var infoMej = GetProp(idxMej);
+                string nombre = infoMej != null ? infoMej.nombre : $"Prop {idxMej}";
+                int baseRent = infoMej?.renta ?? demoPropertyRent;
+                int rentMejorada = Mathf.RoundToInt(baseRent * constructionMult);
+
+                bool ok = false;
+                modal.Show(
+                    "Construcción",
+                    $"¿Mejorar {nombre} por ${constructionCost}?\n" +
+                    $"Renta base: ${baseRent} → ${rentMejorada}\n" +
+                    $"(La mejora se acumula con monopolio y buff/debuff)",
+                    "Mejorar", "Cancelar",
+                    onYes: () =>
+                    {
+                        if (SpendMoney(turno, constructionCost))
+                        {
+                            upgraded[idxMej] = true;
+                            ShowToast($"Mejoraste {nombre}: renta ×{constructionMult:0.##} (−${constructionCost}).", 3f);
+                        }
+                        else
+                        {
+                            ShowToast("No alcanza el dinero para construir.", 2.5f);
+                        }
+                        ok = true;
+                    },
+                    onNo: () => ok = true
+                );
+                yield return new WaitUntil(() => ok);
+            }
         }
 
         // === Evento (2,16,26,34): 40% Catástrofe / 60% Estándar con anti-tilt ===
