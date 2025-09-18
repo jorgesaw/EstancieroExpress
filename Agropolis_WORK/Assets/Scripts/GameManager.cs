@@ -99,6 +99,12 @@ public class GameManager : MonoBehaviour
 
     enum StdEventType { Premio, Multa, Mover, Intercambio, Descuento, Buff, Debuff }
 
+    [Header("Catástrofes (config v1) — 40% del total")]
+    public int catDesastre = 30;      // quita 1 mejora aleatoria
+    public int catReparaciones = 30;  // paga 2× mantenimiento por propiedad
+    public int catEmbargo = 25;       // paga 20% del dinero actual
+    public int catParo = 15;          // limpia buff/debuff de renta
+
     // ----- Buff/Debuff de renta (propiedades) -----
     [Header("Buff/Debuff Renta")]
     public int rentModDurationLaps = 1;    // dura 1 vuelta
@@ -106,21 +112,37 @@ public class GameManager : MonoBehaviour
     enum RentMod { None, Buff, Debuff }
     RentMod[] rentMod = new RentMod[2];    // por jugador (J1=0, J2=1)
     int[] rentModLapsLeft = new int[2];
+  
+    // --- Seguimiento por casilla de origen del efecto ---
+    int[] rentModExpireTile = new int[2]; // casilla Evento donde se activó (−1 = ninguno)
+    bool[] rentModArmed = new bool[2]; // se “arma” al salir de esa casilla
 
     // Activadores
     void GiveRentBuff(int player)
     {
         rentMod[player] = RentMod.Buff;
         rentModLapsLeft[player] = rentModDurationLaps;
+
+        // === NUEVO: casilla donde se activó y “armado” pendiente ===
+        rentModExpireTile[player] = (player == 0 ? p1 : p2).boardIndex;
+        rentModArmed[player] = false;
+
         ShowToast($"Jugador {player + 1}: +25% de renta por {rentModDurationLaps} vuelta(s)", 2.5f);
     }
+
 
     void GiveRentDebuff(int player)
     {
         rentMod[player] = RentMod.Debuff;
         rentModLapsLeft[player] = rentModDurationLaps;
+
+        // === NUEVO: casilla donde se activó y “armado” pendiente ===
+        rentModExpireTile[player] = (player == 0 ? p1 : p2).boardIndex;
+        rentModArmed[player] = false;
+
         ShowToast($"Jugador {player + 1}: -25% de renta por {rentModDurationLaps} vuelta(s)", 2.5f);
     }
+
 
     // Multiplicador según dueño que cobra
     float GetRentModMultiplierForOwner(int owner)
@@ -141,12 +163,46 @@ public class GameManager : MonoBehaviour
     }
 
     // Etiqueta breve para el mensaje de estado
+    // Etiqueta breve para el mensaje de estado (con vueltas restantes)
     string RentModTag(int owner)
     {
-        return rentMod[owner] == RentMod.Buff ? " (+25% buff)" :
-               rentMod[owner] == RentMod.Debuff ? " (-25% debuff)" : "";
+        var type = rentMod[owner];
+        if (type == RentMod.None) return "";
+
+        int laps = Mathf.Max(0, rentModLapsLeft[owner]);
+        string lapsTxt = laps > 0 ? (laps == 1 ? ", 1 vuelta" : $", {laps} vueltas") : "";
+
+        return type == RentMod.Buff
+            ? $" (+25% buff{lapsTxt})"
+            : $" (-25% debuff{lapsTxt})";
     }
 
+    // “Arma” el efecto cuando el jugador abandona la casilla de origen (inicio del siguiente turno).
+    void ArmRentModIfNeededAtTurnStart(int player)
+    {
+        if (rentModExpireTile[player] != -1 && !rentModArmed[player])
+            rentModArmed[player] = true;
+    }
+
+    // Si el jugador aterriza en la casilla de origen y el efecto estaba armado, consume una “vuelta”
+    void TryExpireRentModOnLanding(int player, int tileIndex)
+    {
+        if (rentModExpireTile[player] == -1) return;
+        if (!rentModArmed[player]) return;
+        if (tileIndex != rentModExpireTile[player]) return;
+
+        if (rentModLapsLeft[player] > 0)
+        {
+            rentModLapsLeft[player]--;
+            if (rentModLapsLeft[player] == 0)
+            {
+                rentMod[player] = RentMod.None;
+                rentModExpireTile[player] = -1;
+                rentModArmed[player] = false;
+                ShowToast($"Fin del efecto de renta para Jugador {player + 1}.", 2.0f);
+            }
+        }
+    }
     [Header("Infraestructura (especial comprable) — opción B")]
     public int[] infraIndices = { 6, 14, 24, 32 };
     public string[] infraNombres = { "Planta Reciclaje", "Parque Eólico", "Planta Solar", "Planta Hidroeléctrica" };
@@ -321,6 +377,11 @@ public class GameManager : MonoBehaviour
         for (int i = 0; i < ownerByTile.Length; i++) ownerByTile[i] = -1;
         BuildDefaultProps();  // ← crea la tabla de propiedades (nombres/grupos)
         ApplyTileLabels();    // ← pinta los nombres en cada casilla
+        for (int i = 0; i < 2; i++)
+        {
+            rentModExpireTile[i] = -1;
+            rentModArmed[i] = false;
+        }
 
         UpdateTurnUI();
         HighlightCurrentOnly();
@@ -868,22 +929,106 @@ public class GameManager : MonoBehaviour
         yield return new WaitUntil(() => done);
     }
 
-    // Resolver Catástrofe (placeholder por ahora, con cooldowns listos)
+         // Resolver Catástrofe (ya se llama sólo cuando "isCat" es true)
     IEnumerator ResolveCatastrophe(int jugador)
     {
-        ToastStatus($"Jugador {jugador + 1} — Catástrofe (placeholder).", 2.5f);
+        // Elegimos tipo según pesos configurados
+        int total = catDesastre + catReparaciones + catEmbargo + catParo;
+        int r = Random.Range(0, Mathf.Max(1, total));
+        string titulo = "Catástrofe";
+        string cuerpo = "";
+        System.Action apply = null;
+
+        int acc = 0;
+
+        // 1) DesastreNatural: quita 1 MEJORA aleatoria; si no hay, paga Multa
+        acc += catDesastre;
+        if (r < acc)
+        {
+            int idx = GetRandomUpgradedProp(jugador);
+            if (idx >= 0)
+            {
+                upgraded[idx] = false;
+                var info = GetProp(idx);
+                string nombre = info != null ? info.nombre : $"Prop {idx}";
+                cuerpo = $"Desastre natural en {nombre}.\nPerdiste la mejora.";
+                apply = () =>
+                {
+                    ShowToast($"Desastre: se perdió mejora en {nombre}.", 3f);
+                };
+            }
+            else
+            {
+                // fallback: Multa estándar
+                cuerpo = $"Desastre natural.\nNo tenías mejoras: pagas multa ${multaMonto}.";
+                apply = () =>
+                {
+                    PayToBank(jugador, multaMonto);
+                    ShowToast($"Desastre: multa ${multaMonto}.", 3f);
+                };
+            }
+        }
+        else
+        {
+            // 2) ReparacionesMayores: 2× mantenimiento por propiedad
+            acc += catReparaciones;
+            if (r < acc)
+            {
+                int props = CountOwnedProps(jugador);
+                int totalPago = 2 * maintenanceCostPerProperty * props;
+                cuerpo = $"Reparaciones mayores.\nPropiedades: {props}\nPagas ${maintenanceCostPerProperty}×2 por cada una → ${totalPago}.";
+                apply = () =>
+                {
+                    PayToBank(jugador, totalPago);
+                    ShowToast($"Reparaciones: −${totalPago} ({props} props).", 3f);
+                };
+            }
+            else
+            {
+                // 3) Embargo: paga 20% del dinero actual
+                acc += catEmbargo;
+                if (r < acc)
+                {
+                    int money = GetMoney(jugador);
+                    int cargo = Mathf.RoundToInt(money * 0.20f);
+                    cuerpo = $"Embargo fiscal.\nPagas el 20% de tu dinero actual (${money}) → ${cargo}.";
+                    apply = () =>
+                    {
+                        PayToBank(jugador, cargo);
+                        ShowToast($"Embargo: −${cargo} (20%).", 3f);
+                    };
+                }
+                else
+                {
+                    // 4) ParoGeneral: limpia buff/debuff de renta
+                    cuerpo = $"Paro general.\nSe limpian tus modificadores de renta (buff/debuff).";
+                    apply = () =>
+                    {
+                        rentMod[jugador] = RentMod.None;
+                        rentModLapsLeft[jugador] = 0;
+                        ShowToast("Paro: se limpió tu buff/debuff de renta.", 3f);
+                    };
+                }
+            }
+        }
+
         bool done = false;
-        modal.Show("Catástrofe", "Se aplicará en el siguiente paso (implementación).", "OK", "Cerrar",
-            onYes: () => done = true, onNo: () => done = true);
+        modal.Show(titulo, cuerpo, "OK", "Cerrar",
+            onYes: () => { apply?.Invoke(); done = true; },
+            onNo: () => { apply?.Invoke(); done = true; });
+
         yield return new WaitUntil(() => done);
         yield break;
     }
+
 
     IEnumerator RollAndMove()
     {
         if (btnTirar) btnTirar.interactable = false;
 
         var player = (turno == 0) ? p1 : p2;
+
+        ArmRentModIfNeededAtTurnStart(turno);   // ← NUEVO
 
         int roll = Random.Range(1, 7); // 1..6
         if (txtDado) txtDado.text = roll.ToString();
@@ -906,9 +1051,7 @@ public class GameManager : MonoBehaviour
             ShowToast($"+${startBonus} por pasar Start", 2f);
         }
 
-        AdvanceRentModLapIfPassedStart(turno, pasoPorStart);
-
-
+        TryExpireRentModOnLanding(turno, player.boardIndex);   // ← NUEVO
 
         // Actualiza resaltado a la posición final
         ClearHighlights();
@@ -1431,6 +1574,28 @@ public class GameManager : MonoBehaviour
         }
 
         Debug.Log("No alcanza para pagar renta (v1). Se pagó parcial.");
+    }
+
+    // Dinero actual del jugador
+    int GetMoney(int player) => (player == 0) ? dinero1 : dinero2;
+
+    // Lista de propiedades (impares) del owner
+    List<int> GetOwnedProps(int owner)
+    {
+        var list = new List<int>();
+        for (int i = 1; i < ownerByTile.Length; i += 2)
+            if (ownerByTile[i] == owner) list.Add(i);
+        return list;
+    }
+
+    // Devuelve una propiedad MEJORADA del owner al azar (o -1 si no hay)
+    int GetRandomUpgradedProp(int owner)
+    {
+        var ups = new List<int>();
+        for (int i = 1; i < ownerByTile.Length; i += 2)
+            if (ownerByTile[i] == owner && IsUpgraded(i)) ups.Add(i);
+        if (ups.Count == 0) return -1;
+        return ups[Random.Range(0, ups.Count)];
     }
 
     // ← PEGA AQUÍ (sigue dentro de GameManager)
