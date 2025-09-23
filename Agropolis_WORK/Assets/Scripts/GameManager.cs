@@ -21,6 +21,16 @@ public class GameManager : MonoBehaviour
     public ToastUI toast;   // ← arrastra aquí el objeto "Toast" de la escena
     public RobberyUI robberyUI;
 
+    [Header("Players / CPU")]
+    public bool cpuP1 = false;   // activa CPU para Jugador 1
+    public bool cpuP2 = true;    // activa CPU para Jugador 2
+    public float aiThinkDelay = 0.5f;   // piensa un poquito más rápido
+    public int aiMinReserve = 120;      // guarda menos colchón → compra más
+    public float aiMinYield = 0.10f;    // acepta rentabilidades más bajas si conviene
+
+    bool IsCPU(int pl) => (pl == 0) ? cpuP1 : cpuP2;
+    bool cpuThinking = false;
+
     [Header("Highlight")]
     public Color currentColor = new Color(0.40f, 0.74f, 1f, 1f);
     public Color previewColor = new Color(1f, 0.86f, 0.35f, 1f);
@@ -83,13 +93,14 @@ public class GameManager : MonoBehaviour
     [Header("Eventos (config v1) — 40% catástrofes / 60% estándar")]
     // Pool estándar reescalado a 60% total:
     // (Premio 12, Multa 9, Mover±3 9, Intercambio 6, Descuento 9, Buff 7, Debuff 8)
-    public int evPremio = 12;
-    public int evMulta = 9;
-    public int evMover = 9;
-    public int evIntercambio = 6;
-    public int evDescuento = 9;
+    public int evPremio = 10;
+    public int evMulta = 10;
+    public int evMover = 10;
+    public int evIntercambio = 8;
+    public int evDescuento = 8;
     public int evBuff = 7;
-    public int evDebuff = 8;
+    public int evDebuff = 7;
+
 
     // Anti-tilt:
     // - Cooldown global: no dos catástrofes seguidas globalmente
@@ -367,6 +378,8 @@ public class GameManager : MonoBehaviour
         p2 = Instantiate(player2Prefab, start + new Vector3(0.35f, 0, 0), Quaternion.identity);
         p1.boardIndex = 0;
         p2.boardIndex = 0;
+        // Elegir jugador inicial al azar (0 ó 1)
+        turno = UnityEngine.Random.Range(0, 2);
 
         if (btnTirar) btnTirar.onClick.AddListener(OnTirar);
 
@@ -431,46 +444,55 @@ public class GameManager : MonoBehaviour
         return StdEventType.Debuff;
     }
 
-    // Resolver el evento ESTÁNDAR (por ahora implementamos Premio y Multa)
+    // Resolver el evento ESTÁNDAR
     IEnumerator ResolveStandardEvent(int jugador, StdEventType t)
     {
         switch (t)
         {
+            // === PREMIO ===
             case StdEventType.Premio:
                 {
                     AddMoney(jugador, premioMonto);
                     ToastStatus($"Jugador {jugador + 1} recibe Premio +${premioMonto}.", 3f);
 
-                    bool done = false;
-                    modal.Show("Premio", $"+${premioMonto}", "OK", "Cerrar",
-                        onYes: () => done = true, onNo: () => done = true);
-                    yield return new WaitUntil(() => done);
+                    if (!IsCPU(jugador))
+                    {
+                        bool done = false;
+                        modal.Show("Premio", $"+${premioMonto}", "OK", "Cerrar",
+                            onYes: () => done = true, onNo: () => done = true);
+                        yield return new WaitUntil(() => done);
+                    }
                     break;
                 }
 
+            // === MULTA ===
             case StdEventType.Multa:
                 {
                     PayToBank(jugador, multaMonto);
                     ToastStatus($"Jugador {jugador + 1} paga Multa ${multaMonto}.", 3f);
 
-                    bool done = false;
-                    modal.Show("Multa", $"-${multaMonto}", "OK", "Cerrar",
-                        onYes: () => done = true, onNo: () => done = true);
-                    yield return new WaitUntil(() => done);
+                    if (!IsCPU(jugador))
+                    {
+                        bool done = false;
+                        modal.Show("Multa", $"-${multaMonto}", "OK", "Cerrar",
+                            onYes: () => done = true, onNo: () => done = true);
+                        yield return new WaitUntil(() => done);
+                    }
                     break;
                 }
 
+            // === MOVER ±3 ===
             case StdEventType.Mover:
                 {
-                    // 50/50: +3 o -3
-                    int delta = (Random.Range(0, 2) == 0) ? 3 : -3;
                     var tok = (jugador == 0) ? p1 : p2;
 
                     int idxAntes = tok.boardIndex;
-                    int destino = Wrap(tok.boardIndex + delta);
+                    int delta = (Random.Range(0, 2) == 0) ? 3 : -3;
+
+                    int destino = Wrap(idxAntes + delta);
                     string txt = (delta > 0) ? $"+{delta}" : delta.ToString();
 
-                    // Bono por Start solo si avanza (igual que al tirar dado)
+                    // Bono por Start sólo si avanza
                     if (delta > 0)
                     {
                         int total = board.TileCount;
@@ -481,28 +503,31 @@ public class GameManager : MonoBehaviour
                         }
                     }
 
-                    // Mover (v1: teleport + resolver destino)
+                    // Teleport + resolver destino
                     tok.TeleportTo(board.PathPositions[destino], destino);
                     HighlightCurrentOnly();
 
                     ToastStatus($"Jugador {jugador + 1} se mueve {txt} (Evento).", 2.5f);
 
-                    // Pequeño modal informativo (opcional)
-                    bool ack = false;
-                    modal.Show("Mover", $"Te moviste {txt}.", "OK", "Seguir",
-                        onYes: () => ack = true, onNo: () => ack = true);
-                    yield return new WaitUntil(() => ack);
+                    if (!IsCPU(jugador))
+                    {
+                        bool ack = false;
+                        modal.Show("Mover", $"Te moviste {txt}.", "OK", "Seguir",
+                            onYes: () => ack = true, onNo: () => ack = true);
+                        yield return new WaitUntil(() => ack);
+                    }
 
-                    // ===== Resolver la casilla de destino =====
+                    // ===== Resolver casilla de destino =====
                     var tile = board.GetTile(destino);
                     if (!tile) break;
 
-                    // --- Propiedad (comprar / pagar renta con monopolio +50%) ---
+                    // --- PROPIEDAD ---
                     if (tile.type == TileType.Property)
                     {
                         int idx = tile.index;
                         int dueno = ownerByTile[idx];
 
+                        // Vacía -> oferta de compra
                         if (dueno == -1)
                         {
                             var info = GetProp(idx);
@@ -517,30 +542,38 @@ public class GameManager : MonoBehaviour
                                 ? $"Precio ${price} → con descuento −{discountPercent}%: ${finalPrice}\nRenta ${rent}"
                                 : $"Precio ${price} • Renta ${rent}";
 
-                            esperandoDecision = true;
-                            modal.Show(
-                                titulo, cuerpo, "Comprar", "Pasar",
-                                onYes: () =>
-                                {
-                                    if (SpendMoney(jugador, finalPrice))
+                            if (IsCPU(jugador))
+                            {
+                                // (si quieres IA de compra de props aquí, puedes llamarla)
+                                // Por ahora dejamos sólo flujo humano.
+                            }
+                            else
+                            {
+                                esperandoDecision = true;
+                                modal.Show(
+                                    titulo, cuerpo, "Comprar", "Pasar",
+                                    onYes: () =>
                                     {
-                                        if (tieneDesc) ConsumeDiscount(jugador);
-                                        ownerByTile[idx] = jugador;
-                                        var color = (jugador == 0) ? ownerColorP1 : ownerColorP2;
-                                        tile.SetOwnerMark(color, true);
-                                        ToastStatus($"Jugador {jugador + 1} compró {(info != null ? info.nombre : $"la casilla {idx}")} por ${finalPrice}.", 3f);
-                                    }
-                                    else
-                                    {
-                                        ToastStatus("No alcanza el dinero para comprar.", 2.5f);
-                                    }
-                                    esperandoDecision = false;
-                                },
-                                onNo: () => { esperandoDecision = false; }
-                            );
-                            yield return new WaitUntil(() => esperandoDecision == false);
+                                        if (SpendMoney(jugador, finalPrice))
+                                        {
+                                            if (tieneDesc) ConsumeDiscount(jugador);
+                                            ownerByTile[idx] = jugador;
+                                            var color = (jugador == 0) ? ownerColorP1 : ownerColorP2;
+                                            tile.SetOwnerMark(color, true);
+                                            ToastStatus($"Jugador {jugador + 1} compró {(info != null ? info.nombre : $"la casilla {idx}")} por ${finalPrice}.", 3f);
+                                        }
+                                        else
+                                        {
+                                            ToastStatus("No alcanza el dinero para comprar.", 2.5f);
+                                        }
+                                        esperandoDecision = false;
+                                    },
+                                    onNo: () => { esperandoDecision = false; }
+                                );
+                                yield return new WaitUntil(() => esperandoDecision == false);
+                            }
                         }
-                        // (PROPIEDADES) si el dueño es el rival, cobro renta v1
+                        // De otro jugador -> pagar renta
                         else if (dueno != jugador)
                         {
                             var info = GetProp(idx);
@@ -549,17 +582,14 @@ public class GameManager : MonoBehaviour
 
                             float r = parCompleto ? baseRent * 1.5f : baseRent;
 
-                            // NUEVO: multiplicador por mejora de construcción
-                            float up = GetUpgradeMultForTile(idx);
+                            float up = GetUpgradeMultForTile(idx);          // mejora
                             r *= up;
 
-                            // Buff/Debuff del dueño que cobra
-                            float mod = GetRentModMultiplierForOwner(dueno);
+                            float mod = GetRentModMultiplierForOwner(dueno); // buff/debuff del dueño
                             r *= mod;
 
                             int rent = Mathf.RoundToInt(r);
 
-                            // Toast con desglose
                             string monoTag = parCompleto ? " ×1.5 (monopolio)" : "";
                             string upTag = up > 1f ? $" ×{up:0.##} (mejora)" : "";
                             string modTag = mod > 1f ? " ×1.25 (buff)" : (mod < 1f ? " ×0.75 (debuff)" : "");
@@ -576,7 +606,7 @@ public class GameManager : MonoBehaviour
                         break;
                     }
 
-                    // --- Infraestructura (comprable; renta = base × cantidad poseída por el dueño) ---
+                    // --- INFRA ---
                     if (tile.type == TileType.Infrastructure)
                     {
                         int idx = tile.index;
@@ -585,49 +615,63 @@ public class GameManager : MonoBehaviour
                         {
                             int dueno = ownerByTile[idx];
 
+                            // Vacía -> compra
                             if (dueno == -1)
                             {
                                 string nom = infraNombres[slot];
                                 int price = infraPrecios[slot];
                                 int baseRent = infraRentasBase[slot];
-
                                 int finalPrice = EffectivePrice(jugador, price);
                                 bool tieneDesc = hasDiscount[jugador];
 
-                                esperandoDecision = true;
-                                modal.Show(
-                                    $"¿Comprar {nom}?",
-                                    (tieneDesc
-                                        ? $"Precio ${price} → con descuento −{discountPercent}%: ${finalPrice}\nRenta base ${baseRent}\n(La renta escala por cantidad total de infra del dueño)"
-                                        : $"Precio ${price} • Renta base ${baseRent}\n(La renta escala por cantidad total de infra del dueño)"),
-                                    "Comprar", "Pasar",
-                                    onYes: () =>
+                                if (IsCPU(jugador))
+                                {
+                                    if (AI_ShouldBuyInfra(jugador, slot) && SpendMoney(jugador, finalPrice))
                                     {
-                                        if (SpendMoney(jugador, finalPrice))
+                                        if (tieneDesc) ConsumeDiscount(jugador);
+                                        ownerByTile[idx] = jugador;
+                                        var color = (jugador == 0) ? ownerColorP1 : ownerColorP2;
+                                        tile.SetOwnerMark(color, true);
+                                        ToastStatus($"CPU compró {nom} por ${finalPrice}.", 3f);
+                                    }
+                                }
+                                else
+                                {
+                                    esperandoDecision = true;
+                                    modal.Show(
+                                        $"¿Comprar {nom}?",
+                                        (tieneDesc
+                                            ? $"Precio ${price} → con descuento −{discountPercent}%: ${finalPrice}\nRenta base ${baseRent}\n(La renta escala por cantidad total de infra del dueño)"
+                                            : $"Precio ${price} • Renta base ${baseRent}\n(La renta escala por cantidad total de infra del dueño)"),
+                                        "Comprar", "Pasar",
+                                        onYes: () =>
                                         {
-                                            if (tieneDesc) ConsumeDiscount(jugador);
-                                            ownerByTile[idx] = jugador;
-                                            var color = (jugador == 0) ? ownerColorP1 : ownerColorP2;
-                                            tile.SetOwnerMark(color, true);
-                                            ToastStatus($"Jugador {jugador + 1} compró {nom} por ${finalPrice}.", 3f);
-                                        }
-                                        else
-                                        {
-                                            ToastStatus("No alcanza el dinero para infraestructura.", 2.5f);
-                                        }
-                                        esperandoDecision = false;
-                                    },
-                                    onNo: () => { esperandoDecision = false; }
-                                );
-                                yield return new WaitUntil(() => esperandoDecision == false);
+                                            if (SpendMoney(jugador, finalPrice))
+                                            {
+                                                if (tieneDesc) ConsumeDiscount(jugador);
+                                                ownerByTile[idx] = jugador;
+                                                var color = (jugador == 0) ? ownerColorP1 : ownerColorP2;
+                                                tile.SetOwnerMark(color, true);
+                                                ToastStatus($"Jugador {jugador + 1} compró {nom} por ${finalPrice}.", 3f);
+                                            }
+                                            else
+                                            {
+                                                ToastStatus("No alcanza el dinero para infraestructura.", 2.5f);
+                                            }
+                                            esperandoDecision = false;
+                                        },
+                                        onNo: () => { esperandoDecision = false; }
+                                    );
+                                    yield return new WaitUntil(() => esperandoDecision == false);
+                                }
                             }
+                            // Pagar renta de INFRA
                             else if (dueno != jugador)
                             {
                                 int owned = CountInfraOwned(dueno);
                                 int baseRent = infraRentasBase[slot];
                                 int rent = baseRent * Mathf.Max(1, owned);
 
-                                // Toast con el desglose de INFRA
                                 ToastStatus($"Infra: base ${baseRent} × posee {owned} = ${rent}", 3f);
 
                                 PayPlayerToPlayer(jugador, dueno, rent);
@@ -637,7 +681,7 @@ public class GameManager : MonoBehaviour
                         break;
                     }
 
-                    // --- Evento (permite encadenar, con nuestros cooldowns) ---
+                    // --- EVENTO (cadena) ---
                     if (tile.type == TileType.Event)
                     {
                         bool forceStandard = globalCatCooldown || (playerCatCooldown[jugador] > 0);
@@ -665,47 +709,60 @@ public class GameManager : MonoBehaviour
                         break;
                     }
 
-                    // --- Premios/Impuestos/Descanso (pares) ---
+                    // --- PARES (Premio / Impuesto / Descanso) ---
                     if (tile.type == TileType.Prize)
                     {
                         AddMoney(jugador, premioMonto);
                         ToastStatus($"Jugador {jugador + 1} cobró premio +${premioMonto} (casilla {tile.index}).", 3f);
 
-                        bool done = false;
-                        modal.Show("Premio", $"+${premioMonto}", "OK", "Cerrar",
-                            onYes: () => done = true, onNo: () => done = true);
-                        yield return new WaitUntil(() => done);
+                        if (!IsCPU(jugador))
+                        {
+                            bool done = false;
+                            modal.Show("Premio", $"+${premioMonto}", "OK", "Cerrar",
+                                onYes: () => done = true, onNo: () => done = true);
+                            yield return new WaitUntil(() => done);
+                        }
                         break;
                     }
+
                     if (tile.type == TileType.Tax)
                     {
                         PayToBank(jugador, impuestoMonto);
                         ToastStatus($"Jugador {jugador + 1} pagó impuesto ${impuestoMonto} (casilla {tile.index}).", 3f);
 
-                        bool done = false;
-                        modal.Show("Impuesto", $"${impuestoMonto}", "OK", "Cerrar",
-                            onYes: () => done = true, onNo: () => done = true);
-                        yield return new WaitUntil(() => done);
+                        if (!IsCPU(jugador))
+                        {
+                            bool done = false;
+                            modal.Show("Impuesto", $"${impuestoMonto}", "OK", "Cerrar",
+                                onYes: () => done = true, onNo: () => done = true);
+                            yield return new WaitUntil(() => done);
+                        }
                         break;
                     }
+
                     if (tile.type == TileType.Rest)
                     {
                         AddMoney(jugador, restBonus);
                         ToastStatus($"Jugador {jugador + 1} descansó y cobró ${restBonus} (casilla {tile.index}).", 3f);
 
-                        bool done = false;
-                        modal.Show("Descanso", $"+${restBonus}", "OK", "Cerrar",
-                            onYes: () => done = true, onNo: () => done = true);
-                        yield return new WaitUntil(() => done);
+                        if (!IsCPU(jugador))
+                        {
+                            bool done = false;
+                            modal.Show("Descanso", $"+${restBonus}", "OK", "Cerrar",
+                                onYes: () => done = true, onNo: () => done = true);
+                            yield return new WaitUntil(() => done);
+                        }
                         break;
                     }
-                    // --- Robo ---
+
+                    // --- ROBO ---
                     if (tile.type == TileType.Robbery)
                     {
                         yield return ResolveRobbery(jugador);
                         break;
                     }
-                    // --- Cárcel / Ir a Cárcel ---
+
+                    // --- IR A CÁRCEL / CÁRCEL ---
                     if (tile.type == TileType.GoToJail)
                     {
                         tok.TeleportTo(board.PathPositions[10], 10);
@@ -715,51 +772,63 @@ public class GameManager : MonoBehaviour
                     }
                     if (tile.type == TileType.Jail)
                     {
-                        bool done = false;
-                        modal.Show(
-                            "Cárcel",
-                            $"Pagar fianza ${bailCost} o perder 1 turno",
-                            "Pagar",
-                            "Perder turno",
-                            onYes: () =>
+                        if (IsCPU(jugador))
+                        {
+                            bool pay = AI_ShouldPayBail(jugador);
+                            if (pay && SpendMoney(jugador, bailCost))
                             {
-                                if (SpendMoney(jugador, bailCost))
-                                {
-                                    ToastStatus($"Jugador {jugador + 1} pagó fianza ${bailCost} y sigue jugando.", 3f);
-                                }
-                                else
-                                {
-                                    skipTurns[jugador] = 1;
-                                    ToastStatus($"No alcanzó para la fianza. Jugador {jugador + 1} pierde 1 turno.", 3f);
-                                }
-                                done = true;
-                            },
-                            onNo: () =>
+                                ToastStatus($"CPU pagó fianza ${bailCost} y sigue jugando.", 3f);
+                            }
+                            else
                             {
                                 skipTurns[jugador] = 1;
-                                ToastStatus($"Jugador {jugador + 1} perdió 1 turno (cárcel).", 3f);
-                                done = true;
+                                ToastStatus("CPU pierde 1 turno (cárcel).", 3f);
                             }
-                        );
-                        yield return new WaitUntil(() => done);
+                        }
+                        else
+                        {
+                            bool done = false;
+                            modal.Show(
+                                "Cárcel",
+                                $"Pagar fianza ${bailCost} o perder 1 turno",
+                                "Pagar", "Perder turno",
+                                onYes: () =>
+                                {
+                                    if (SpendMoney(jugador, bailCost))
+                                    {
+                                        ToastStatus($"Jugador {jugador + 1} pagó fianza ${bailCost} y sigue jugando.", 3f);
+                                    }
+                                    else
+                                    {
+                                        skipTurns[jugador] = 1;
+                                        ToastStatus($"No alcanzó para la fianza. Jugador {jugador + 1} pierde 1 turno.", 3f);
+                                    }
+                                    done = true;
+                                },
+                                onNo: () =>
+                                {
+                                    skipTurns[jugador] = 1;
+                                    ToastStatus($"Jugador {jugador + 1} perdió 1 turno (cárcel).", 3f);
+                                    done = true;
+                                }
+                            );
+                            yield return new WaitUntil(() => done);
+                        }
                         break;
                     }
 
-                    // (Robo / Construcción / Mantenimiento los añadimos en pasos siguientes)
-                    break;
+                    break; // fin mover
                 }
 
+            // === INTERCAMBIO ===
             case StdEventType.Intercambio:
                 {
-                    // Rival: elegimos aleatoriamente ENTRE los jugadores que tengan al menos 1 propiedad.
-                    // Esto funciona con 2 jugadores HOY y escalará a 3–4 mañana sin tocar esta lógica.
-
-                    // 1) Mis propiedades (solo casillas impares = propiedades)
+                    // 1) Mis props
                     List<int> misProps = new List<int>();
                     for (int i = 1; i < ownerByTile.Length; i += 2)
                         if (ownerByTile[i] == jugador) misProps.Add(i);
 
-                    // 2) Propiedades por oponente (clave = ownerId)
+                    // 2) Props por oponente
                     Dictionary<int, List<int>> propsPorOponente = new Dictionary<int, List<int>>();
                     for (int i = 1; i < ownerByTile.Length; i += 2)
                     {
@@ -775,25 +844,28 @@ public class GameManager : MonoBehaviour
                         }
                     }
 
-                    // 3) Fallback: si yo NO tengo o NADIE rival tiene propiedades → Premio +$80
+                    // 3) Fallback a premio si no se puede
                     if (misProps.Count == 0 || propsPorOponente.Count == 0)
                     {
                         int premioFallback = 80;
                         AddMoney(jugador, premioFallback);
                         ToastStatus($"Intercambio no posible. Jugador {jugador + 1} recibe premio +${premioFallback}.", 3f);
 
-                        bool ok = false;
-                        modal.Show("Premio", $"+${premioFallback}", "OK", "Cerrar",
-                            onYes: () => ok = true, onNo: () => ok = true);
-                        yield return new WaitUntil(() => ok);
+                        if (!IsCPU(jugador))
+                        {
+                            bool ok = false;
+                            modal.Show("Premio", $"+${premioFallback}", "OK", "Cerrar",
+                                onYes: () => ok = true, onNo: () => ok = true);
+                            yield return new WaitUntil(() => ok);
+                        }
                         break;
                     }
 
-                    // 4) Elegir rival al azar ENTRE quienes tengan propiedades
+                    // 4) Elegir rival al azar entre quienes tienen props
                     var rivalesConProps = new List<int>(propsPorOponente.Keys);
                     int rival = rivalesConProps[Random.Range(0, rivalesConProps.Count)];
 
-                    // 5) Elegir 1 propiedad mía y 1 del rival al azar
+                    // 5) Elegir 1 mía y 1 del rival al azar
                     int idxA = misProps[Random.Range(0, misProps.Count)];
                     var susProps = propsPorOponente[rival];
                     int idxB = susProps[Random.Range(0, susProps.Count)];
@@ -807,7 +879,7 @@ public class GameManager : MonoBehaviour
                     ownerByTile[idxA] = rival;
                     ownerByTile[idxB] = jugador;
 
-                    // 7) Actualizar marquitas visuales (nota: con >2 jugadores habrá que mapear color por ownerId)
+                    // 7) Marcas visuales
                     var tA = board.GetTile(idxA);
                     if (tA) tA.SetOwnerMark(rival == 0 ? ownerColorP1 : ownerColorP2, true);
                     var tB = board.GetTile(idxB);
@@ -815,13 +887,17 @@ public class GameManager : MonoBehaviour
 
                     ToastStatus($"Intercambio: Jugador {jugador + 1} da {nombreA} ↔ recibe {nombreB} de Jugador {rival + 1}.", 3f);
 
-                    bool done = false;
-                    modal.Show("Intercambio", $"Entregaste: {nombreA}\nRecibiste: {nombreB}", "OK", "Cerrar",
-                        onYes: () => done = true, onNo: () => done = true);
-                    yield return new WaitUntil(() => done);
+                    if (!IsCPU(jugador))
+                    {
+                        bool done = false;
+                        modal.Show("Intercambio", $"Entregaste: {nombreA}\nRecibiste: {nombreB}", "OK", "Cerrar",
+                            onYes: () => done = true, onNo: () => done = true);
+                        yield return new WaitUntil(() => done);
+                    }
                     break;
                 }
 
+            // === DESCUENTO ===
             case StdEventType.Descuento:
                 {
                     if (!hasDiscount[jugador])
@@ -829,107 +905,129 @@ public class GameManager : MonoBehaviour
                         hasDiscount[jugador] = true;
                         ToastStatus($"Jugador {jugador + 1} obtuvo Descuento −{discountPercent}% en la próxima compra.", 3f);
 
-                        bool ok = false;
-                        modal.Show("Power-up: Descuento",
-                            $"Se aplicará automáticamente a tu próxima compra.\nValor: −{discountPercent}%",
-                            "OK", "Cerrar",
-                            onYes: () => ok = true, onNo: () => ok = true);
-                        yield return new WaitUntil(() => ok);
+                        if (!IsCPU(jugador))
+                        {
+                            bool ok = false;
+                            modal.Show("Power-up: Descuento",
+                                $"Se aplicará automáticamente a tu próxima compra.\nValor: −{discountPercent}%",
+                                "OK", "Cerrar",
+                                onYes: () => ok = true, onNo: () => ok = true);
+                            yield return new WaitUntil(() => ok);
+                        }
                     }
                     else
                     {
                         ToastStatus("Descuento ya activo: no se acumula ni se renueva.", 3f);
 
+                        if (!IsCPU(jugador))
+                        {
+                            bool ok = false;
+                            modal.Show("Descuento ya activo",
+                                "Ya tienes un Descuento guardado.\n(No se acumula ni se renueva)",
+                                "OK", "Cerrar",
+                                onYes: () => ok = true, onNo: () => ok = true);
+                            yield return new WaitUntil(() => ok);
+                        }
+                    }
+                    break;
+                }
+
+            // === BUFF DE RENTA ===
+            case StdEventType.Buff:
+                {
+                    GiveRentBuff(jugador); // tu función que aplica el +% y hace toast si corresponde
+
+                    if (!IsCPU(jugador))
+                    {
                         bool ok = false;
-                        modal.Show("Descuento ya activo",
-                            "Ya tienes un Descuento guardado.\n(No se acumula ni se renueva)", "OK", "Cerrar",
+                        modal.Show("Buff de renta",
+                            $"+25% en tus propiedades por {rentModDurationLaps} vuelta.",
+                            "OK", "Cerrar",
                             onYes: () => ok = true, onNo: () => ok = true);
                         yield return new WaitUntil(() => ok);
                     }
                     break;
                 }
 
-            case StdEventType.Buff:
-                {
-                    GiveRentBuff(jugador); // ya toastea adentro
-                    bool ok = false;
-                    modal.Show("Buff de renta",
-                        $"+25% en tus propiedades por {rentModDurationLaps} vuelta.",
-                        "OK", "Cerrar",
-                        onYes: () => ok = true, onNo: () => ok = true);
-                    yield return new WaitUntil(() => ok);
-                    break;
-                }
-
+            // === DEBUFF DE RENTA ===
             case StdEventType.Debuff:
                 {
-                    GiveRentDebuff(jugador); // ya toastea adentro
-                    bool ok = false;
-                    modal.Show("Debuff de renta",
-                        $"-25% en tus propiedades por {rentModDurationLaps} vuelta.",
-                        "OK", "Cerrar",
-                        onYes: () => ok = true, onNo: () => ok = true);
-                    yield return new WaitUntil(() => ok);
+                    GiveRentDebuff(jugador); // tu función que aplica el -% y hace toast si corresponde
+
+                    if (!IsCPU(jugador))
+                    {
+                        bool ok = false;
+                        modal.Show("Debuff de renta",
+                            $"-25% en tus propiedades por {rentModDurationLaps} vuelta.",
+                            "OK", "Cerrar",
+                            onYes: () => ok = true, onNo: () => ok = true);
+                        yield return new WaitUntil(() => ok);
+                    }
                     break;
                 }
 
+            // === DEFAULT (placeholder sin molestar a la CPU) ===
             default:
                 {
-                    // Placeholder: iremos implementando estos en micro-pasos
-                    bool done = false;
-                    modal.Show("Evento", "Efecto en preparación (próximo paso).", "OK", "Cerrar",
-                        onYes: () => done = true, onNo: () => done = true);
-                    yield return new WaitUntil(() => done);
+                    if (!IsCPU(jugador))
+                    {
+                        bool done = false;
+                        modal.Show("Evento", "Efecto en preparación (próximo paso).", "OK", "Cerrar",
+                            onYes: () => done = true, onNo: () => done = true);
+                        yield return new WaitUntil(() => done);
+                    }
+                    else
+                    {
+                        ToastStatus("Evento aplicado (CPU).", 1.5f);
+                    }
                     break;
                 }
         }
+
         yield break;
     }
 
     // --- Robo: UI de 3 cartas + lógica simple ---
     IEnumerator ResolveRobbery(int jugador)
     {
-        int rival = (jugador == 0) ? 1 : 0;
-        bool done = false;
+        // Si es CPU: elegir una carta aleatoria y aplicar sin UI
+        if (IsCPU(jugador))
+        {
+            // Si tu RobberyUI expone las cartas, puedes samplear ahí. Si no, random simple:
+            var opciones = new[]
+            {
+            RobberyUI.RobberyCardType.Steal15,
+            RobberyUI.RobberyCardType.Steal20,
+            RobberyUI.RobberyCardType.Steal25,
+            RobberyUI.RobberyCardType.StealProperty,
+            RobberyUI.RobberyCardType.Double15,
+            RobberyUI.RobberyCardType.Null,
+            RobberyUI.RobberyCardType.Jail,
+            RobberyUI.RobberyCardType.JailLose5,
+            RobberyUI.RobberyCardType.JailLose10,
+        };
+            var pick = opciones[Random.Range(0, opciones.Length)];
+            var rrCPU = new RobberyUI.RobberyResult { type = pick };
+            ApplyRobberyResult(jugador, rrCPU);
+            yield break;
+        }
 
-        // Muestra la UI con 3 cartas. El callback nos da 0/1/2 según la carta elegida.
+        // Humano: abrir UI
+        bool done = false;
+        RobberyUI.RobberyResult rr = default;
+
         robberyUI.Show(
             "Robo",
             "Elige una carta:",
-            "Robar +" + robberyWin,   // Carta A
-            "Nada",                   // Carta B
-            "Te roban -" + robberyLose, // Carta C
-            (pick) =>
-            {
-                switch (pick)
-                {
-                    case 0: // Robar al rival
-                        PayPlayerToPlayer(rival, jugador, robberyWin);
-                        ToastStatus($"Jugador {jugador + 1} robó ${robberyWin} a Jugador {rival + 1}.", 3f);
-                        break;
-
-                    case 1: // Nada
-                        ToastStatus("Nada pasó.", 2f);
-                        break;
-
-                    case 2: // Te roban
-                        PayPlayerToPlayer(jugador, rival, robberyLose);
-                        ToastStatus($"A Jugador {jugador + 1} le robaron ${robberyLose}.", 3f);
-                        break;
-
-                    default: // Cerrar sin elegir
-                        ToastStatus("Robo cancelado.", 2f);
-                        break;
-                }
-
-                done = true;
-            }
+            r => { rr = r; done = true; }
         );
 
         yield return new WaitUntil(() => done);
+        ApplyRobberyResult(jugador, rr);
     }
 
-         // Resolver Catástrofe (ya se llama sólo cuando "isCat" es true)
+
+    // Resolver Catástrofe (ya se llama sólo cuando "isCat" es true)
     IEnumerator ResolveCatastrophe(int jugador)
     {
         // Elegimos tipo según pesos configurados
@@ -1012,13 +1110,20 @@ public class GameManager : MonoBehaviour
             }
         }
 
-        bool done = false;
-        modal.Show(titulo, cuerpo, "OK", "Cerrar",
-            onYes: () => { apply?.Invoke(); done = true; },
-            onNo: () => { apply?.Invoke(); done = true; });
-
-        yield return new WaitUntil(() => done);
-        yield break;
+        if (IsCPU(jugador))
+        {
+            apply?.Invoke();   // aplica en silencio para CPU
+            yield break;
+        }
+        else
+        {
+            bool done = false;
+            modal.Show(titulo, cuerpo, "OK", "Cerrar",
+                onYes: () => { apply?.Invoke(); done = true; },
+                onNo: () => { apply?.Invoke(); done = true; });
+            yield return new WaitUntil(() => done);
+            yield break;
+        }
     }
 
 
@@ -1077,52 +1182,57 @@ public class GameManager : MonoBehaviour
             int idx = landedTile.index;
             int duenoActual = ownerByTile[idx];
 
-            if (duenoActual == -1) // sin dueño → ofrecer compra
+            if (duenoActual == -1) // sin dueño → compra IA / modal humano
             {
-                esperandoDecision = true;
                 var info = GetProp(idx);
                 int price = info?.precio ?? demoPropertyPrice;
                 int rent = info?.renta ?? demoPropertyRent;
                 int finalPrice = EffectivePrice(turno, price);
                 bool tieneDesc = hasDiscount[turno];
 
-                string titulo = info != null ? $"¿Comprar {info.nombre}?" : "¿Comprar propiedad?";
-                string cuerpo = tieneDesc
-    ? $"Precio ${price} → con descuento −{discountPercent}%: ${finalPrice}\nRenta ${rent}"
-    : $"Precio ${price} • Renta ${rent}";
-
-
-
-                modal.Show(
-                    titulo,
-                    cuerpo,
-                    "Comprar",
-                    "Pasar",
-                    onYes: () =>
+                if (IsCPU(turno))
+                {
+                    bool comprar = AI_ShouldBuyProperty(turno, idx, price, rent);
+                    if (comprar && SpendMoney(turno, finalPrice))
                     {
-                        // intenta pagar
-                        if (SpendMoney(turno, finalPrice))
-                        {
-                            if (tieneDesc) ConsumeDiscount(turno);
-                            // (lo demás queda igual)
-                            ownerByTile[idx] = turno;
-                            var colorDueno = (turno == 0) ? ownerColorP1 : ownerColorP2;
-                            landedTile.SetOwnerMark(colorDueno, true);
-                            ToastStatus($"Jugador {turno + 1} compró {(info != null ? info.nombre : $"casilla {idx}")} por ${finalPrice}.", 3f);
-                        }
+                        if (tieneDesc) ConsumeDiscount(turno);
+                        ownerByTile[idx] = turno;
+                        var colorDueno = (turno == 0) ? ownerColorP1 : ownerColorP2;
+                        landedTile.SetOwnerMark(colorDueno, true);
+                        ToastStatus($"CPU compró {(info != null ? info.nombre : $"casilla {idx}")} por ${finalPrice}.", 2.5f);
+                    }
+                    // Si decide no comprar, no se muestra modal
+                }
+                else
+                {
+                    esperandoDecision = true;
+                    string titulo = info != null ? $"¿Comprar {info.nombre}?" : "¿Comprar propiedad?";
+                    string cuerpo = tieneDesc
+                        ? $"Precio ${price} → con descuento −{discountPercent}%: ${finalPrice}\nRenta ${rent}"
+                        : $"Precio ${price} • Renta ${rent}";
 
-                        else
+                    modal.Show(
+                        titulo, cuerpo, "Comprar", "Pasar",
+                        onYes: () =>
                         {
-                            // sin saldo: no compra (más adelante mostramos aviso bonito)
-                            ToastStatus("No alcanza el dinero para comprar.", 2.5f);
-                        }
-                        esperandoDecision = false;
-                    },
-                    onNo: () => { esperandoDecision = false; }
-                );
-
-                // Espera hasta que toque un botón del modal
-                yield return new WaitUntil(() => esperandoDecision == false);
+                            if (SpendMoney(turno, finalPrice))
+                            {
+                                if (tieneDesc) ConsumeDiscount(turno);
+                                ownerByTile[idx] = turno;
+                                var colorDueno = (turno == 0) ? ownerColorP1 : ownerColorP2;
+                                landedTile.SetOwnerMark(colorDueno, true);
+                                ToastStatus($"Jugador {turno + 1} compró {(info != null ? info.nombre : $"casilla {idx}")} por ${finalPrice}.", 3f);
+                            }
+                            else
+                            {
+                                ToastStatus("No alcanza el dinero para comprar.", 2.5f);
+                            }
+                            esperandoDecision = false;
+                        },
+                        onNo: () => { esperandoDecision = false; }
+                    );
+                    yield return new WaitUntil(() => esperandoDecision == false);
+                }
             }
             else
             {
@@ -1171,42 +1281,55 @@ public class GameManager : MonoBehaviour
 
                 if (duenoActual == -1)
                 {
-                    // Ofrecer compra
-                    esperandoDecision = true;
                     string nom = infraNombres[slot];
                     int price = infraPrecios[slot];
                     int baseRent = infraRentasBase[slot];
                     int finalPrice = EffectivePrice(turno, price);
                     bool tieneDesc = hasDiscount[turno];
 
-                    modal.Show(
-    $"¿Comprar {nom}?",
-    tieneDesc
-        ? $"Precio ${price} -> con descuento -{discountPercent}%: ${finalPrice}\nRenta base ${baseRent}\n(La renta escala por cantidad total de infra del dueno)"
-        : $"Precio ${price} • Renta base ${baseRent}\n(La renta escala por cantidad total de infra del dueno)",
-    "Comprar",
-    "Pasar",
-    onYes: () =>
-    {
-        if (SpendMoney(turno, finalPrice))
-        {
-            if (tieneDesc) ConsumeDiscount(turno);
-            ownerByTile[idx] = turno;
-            var colorDueno = (turno == 0) ? ownerColorP1 : ownerColorP2;
-            landedTile.SetOwnerMark(colorDueno, true);
-            ToastStatus($"Jugador {turno + 1} compró {nom} por ${finalPrice}.", 3f);
-        }
-        else
-        {
-            ToastStatus("No alcanza el dinero para infraestructura.", 2.5f);
-        }
-        esperandoDecision = false;
-    },
-    onNo: () => { esperandoDecision = false; }
-);
-
-                    yield return new WaitUntil(() => esperandoDecision == false);
+                    if (IsCPU(turno))
+                    {
+                        if (AI_ShouldBuyInfra(turno, slot) && SpendMoney(turno, finalPrice))
+                        {
+                            if (tieneDesc) ConsumeDiscount(turno);
+                            ownerByTile[idx] = turno;
+                            var colorDueno = (turno == 0) ? ownerColorP1 : ownerColorP2;
+                            landedTile.SetOwnerMark(colorDueno, true);
+                            ToastStatus($"CPU compró {nom} por ${finalPrice}.", 3f);
+                        }
+                    }
+                    else
+                    {
+                        esperandoDecision = true;
+                        modal.Show(
+                            $"¿Comprar {nom}?",
+                            (tieneDesc
+                                ? $"Precio ${price} -> con descuento -{discountPercent}%: ${finalPrice}\nRenta base ${baseRent}\n(La renta escala por cantidad total de infra del dueno)"
+                                : $"Precio ${price} • Renta base ${baseRent}\n(La renta escala por cantidad total de infra del dueno)"),
+                            "Comprar",
+                            "Pasar",
+                            onYes: () =>
+                            {
+                                if (SpendMoney(turno, finalPrice))
+                                {
+                                    if (tieneDesc) ConsumeDiscount(turno);
+                                    ownerByTile[idx] = turno;
+                                    var colorDueno = (turno == 0) ? ownerColorP1 : ownerColorP2;
+                                    landedTile.SetOwnerMark(colorDueno, true);
+                                    ToastStatus($"Jugador {turno + 1} compró {nom} por ${finalPrice}.", 3f);
+                                }
+                                else
+                                {
+                                    ToastStatus("No alcanza el dinero para infraestructura.", 2.5f);
+                                }
+                                esperandoDecision = false;
+                            },
+                            onNo: () => { esperandoDecision = false; }
+                        );
+                        yield return new WaitUntil(() => esperandoDecision == false);
+                    }
                 }
+
                 else if (duenoActual != turno)
                 {
                     int owned = CountInfraOwned(duenoActual);
@@ -1239,53 +1362,101 @@ public class GameManager : MonoBehaviour
         // --- Construcción (28) ---
         if (landedTile && landedTile.type == TileType.Construction)
         {
-            // reunir propiedades propias NO mejoradas (impares)
-            var upgradables = new System.Collections.Generic.List<int>();
-            for (int i = 1; i < board.TileCount; i += 2)
-                if (ownerByTile[i] == turno && !IsUpgraded(i)) upgradables.Add(i);
-
-            if (upgradables.Count == 0)
+            if (IsCPU(turno))
             {
-                bool ok = false;
-                modal.Show("Construcción",
-                    "No tienes propiedades para mejorar (o ya están mejoradas).",
-                    "OK", "Cerrar",
-                    onYes: () => ok = true, onNo: () => ok = true);
-                yield return new WaitUntil(() => ok);
+                // CPU: elige la mejor mejora posible y la paga si alcanza
+                AI_UpgradeBestProperty(turno);
             }
             else
             {
-                int idxMej = upgradables[0]; // v1: tomamos la primera
-                var infoMej = GetProp(idxMej);
-                string nombre = infoMej != null ? infoMej.nombre : $"Prop {idxMej}";
-                int baseRent = infoMej?.renta ?? demoPropertyRent;
-                int rentMejorada = Mathf.RoundToInt(baseRent * constructionMult);
+                // HUMANO: tu flujo actual de elegir qué mejorar
+                var upgradables = new System.Collections.Generic.List<int>();
+                for (int i = 1; i < board.TileCount; i += 2)
+                    if (ownerByTile[i] == turno && !IsUpgraded(i)) upgradables.Add(i);
 
-                bool ok = false;
-                modal.Show(
-                    "Construcción",
-                    $"¿Mejorar {nombre} por ${constructionCost}?\n" +
-                    $"Renta base: ${baseRent} → ${rentMejorada}\n" +
-                    $"(La mejora se acumula con monopolio y buff/debuff)",
-                    "Mejorar", "Cancelar",
-                    onYes: () =>
+                if (upgradables.Count == 0)
+                {
+                    bool ok = false;
+                    modal.Show("Construcción",
+                        "No tienes propiedades para mejorar (o ya están mejoradas).",
+                        "OK", "Cerrar",
+                        onYes: () => ok = true, onNo: () => ok = true);
+                    yield return new WaitUntil(() => ok);
+                }
+                else
+                {
+                    int sel = 0;
+                    bool doneChoosing = false;
+
+                    while (!doneChoosing)
                     {
-                        if (SpendMoney(turno, constructionCost))
+                        int idxMej = upgradables[sel];
+                        var infoMej = GetProp(idxMej);
+                        string nombre = infoMej != null ? infoMej.nombre : $"Prop {idxMej}";
+                        int baseRent = infoMej?.renta ?? demoPropertyRent;
+                        int rentMejorada = Mathf.RoundToInt(baseRent * constructionMult);
+
+                        bool pressed = false;
+                        bool chooseThis = false;
+
+                        modal.Show(
+                            "Construcción",
+                            $"Propiedad: {nombre}\n" +
+                            $"Renta base: ${baseRent} → ${rentMejorada}\n" +
+                            $"Costo: ${constructionCost}\n" +
+                            $"{sel + 1}/{upgradables.Count}",
+                            upgradables.Count > 1 ? "Siguiente" : "Cancelar",
+                            "Mejorar",
+                            onYes: () => { chooseThis = false; pressed = true; },
+                            onNo: () => { chooseThis = true; pressed = true; }
+                        );
+                        yield return new WaitUntil(() => pressed);
+
+                        if (chooseThis)
                         {
-                            upgraded[idxMej] = true;
-                            ShowToast($"Mejoraste {nombre}: renta ×{constructionMult:0.##} (−${constructionCost}).", 3f);
+                            if (SpendMoney(turno, constructionCost))
+                            {
+                                upgraded[idxMej] = true;
+                                ShowToast($"Mejoraste {nombre}: renta ×{constructionMult:0.##} (−${constructionCost}).", 3f);
+                            }
+                            else
+                            {
+                                ShowToast("No alcanza el dinero para construir.", 2.5f);
+                            }
+                            doneChoosing = true;
                         }
                         else
                         {
-                            ShowToast("No alcanza el dinero para construir.", 2.5f);
+                            if (upgradables.Count <= 1)
+                            {
+                                doneChoosing = true;
+                            }
+                            else
+                            {
+                                sel = (sel + 1) % upgradables.Count;
+
+                                if (sel == 0)
+                                {
+                                    bool pressedExit = false;
+                                    bool exitNow = false;
+                                    modal.Show(
+                                        "Construcción",
+                                        "¿Salir sin mejorar?",
+                                        "Seguir viendo",
+                                        "Salir",
+                                        onYes: () => { exitNow = false; pressedExit = true; },
+                                        onNo: () => { exitNow = true; pressedExit = true; }
+                                    );
+                                    yield return new WaitUntil(() => pressedExit);
+                                    if (exitNow) doneChoosing = true;
+                                }
+                            }
                         }
-                        ok = true;
-                    },
-                    onNo: () => ok = true
-                );
-                yield return new WaitUntil(() => ok);
+                    }
+                }
             }
         }
+
 
         // === Evento (2,16,26,34): 40% Catástrofe / 60% Estándar con anti-tilt ===
         if (landedTile && landedTile.type == TileType.Event)
@@ -1333,22 +1504,26 @@ public class GameManager : MonoBehaviour
             }
             else
             {
-                // Con propiedades: cobrar y mostrar el modal con el desglose
+                // Cobrar mantenimiento
                 PayToBank(turno, total);
 
-                bool done = false;
-                modal.Show(
-                    "Mantenimiento",
-                    $"−${total}\n${maintenanceCostPerProperty} × {props} propiedades",
-                    "OK", "Cerrar",
-                    onYes: () => done = true,
-                    onNo: () => done = true
-                );
-                yield return new WaitUntil(() => done);
+                // Solo mostrar el modal si NO es la CPU
+                if (!IsCPU(turno))
+                {
+                    bool done = false;
+                    modal.Show(
+                        "Mantenimiento",
+                        $"−${total}\n${maintenanceCostPerProperty} × {props} propiedades",
+                        "OK", "Cerrar",
+                        onYes: () => done = true,
+                        onNo: () => done = true
+                    );
+                    yield return new WaitUntil(() => done);
+                }
 
                 ToastStatus($"Jugador {turno + 1} pagó mantenimiento ${total} ({props} propiedades).", 3f);
             }
-        } // ← cierre correcto del bloque de Mantenimiento
+        }
 
         // --- Especiales pares simples (v1) ---
         else if (landedTile && (
@@ -1364,81 +1539,95 @@ public class GameManager : MonoBehaviour
                 case 4:
                 case 18:
                     {
-                        // Cobrar premio
                         AddMoney(turno, premioMonto);
                         ToastStatus($"Jugador {turno + 1} cobró premio ${premioMonto} (casilla {idx}).", 3f);
 
-                        bool ok = false;
-                        modal.Show(
-                            "Premio", $"${premioMonto}", "OK", "Cerrar",
-                            onYes: () => ok = true,
-                            onNo: () => ok = true
-                        );
-                        yield return new WaitUntil(() => ok);
+                        if (!IsCPU(turno))
+                        {
+                            bool ok = false;
+                            modal.Show("Premio", $"${premioMonto}", "OK", "Cerrar",
+                                onYes: () => ok = true, onNo: () => ok = true);
+                            yield return new WaitUntil(() => ok);
+                        }
                         break;
                     }
 
+
                 case 8:
                     {
-                        // Impuesto
                         PayToBank(turno, impuestoMonto);
                         ToastStatus($"Jugador {turno + 1} pagó impuesto ${impuestoMonto} (casilla {idx}).", 3f);
 
-                        bool ok = false;
-                        modal.Show(
-                            "Impuesto", $"${impuestoMonto}", "OK", "Cerrar",
-                            onYes: () => ok = true,
-                            onNo: () => ok = true
-                        );
-                        yield return new WaitUntil(() => ok);
+                        if (!IsCPU(turno))
+                        {
+                            bool ok = false;
+                            modal.Show("Impuesto", $"${impuestoMonto}", "OK", "Cerrar",
+                                onYes: () => ok = true, onNo: () => ok = true);
+                            yield return new WaitUntil(() => ok);
+                        }
                         break;
                     }
 
                 case 10:
                     {
-                        // Cárcel: elegir fianza o perder 1 turno
-                        bool done = false;
-                        modal.Show(
-                            "Cárcel",
-                            $"Pagar fianza ${bailCost} o perder 1 turno",
-                            "Pagar", "Perder turno",
-                            onYes: () =>
+                        if (IsCPU(turno))
+                        {
+                            bool pay = AI_ShouldPayBail(turno);
+                            if (pay && SpendMoney(turno, bailCost))
                             {
-                                if (SpendMoney(turno, bailCost))
-                                {
-                                    ToastStatus($"Jugador {turno + 1} pagó fianza ${bailCost} y sigue jugando.", 3f);
-                                }
-                                else
-                                {
-                                    skipTurns[turno] = 1;
-                                    ToastStatus($"No alcanzó para la fianza. Jugador {turno + 1} pierde 1 turno.", 3f);
-                                }
-                                done = true;
-                            },
-                            onNo: () =>
+                                ToastStatus("CPU pagó fianza y sigue jugando.", 3f);
+                            }
+                            else
                             {
                                 skipTurns[turno] = 1;
-                                ToastStatus($"Jugador {turno + 1} perdió 1 turno (cárcel).", 3f);
-                                done = true;
+                                ToastStatus("CPU pierde 1 turno (cárcel).", 3f);
                             }
-                        );
-                        yield return new WaitUntil(() => done);
+                        }
+                        else
+                        {
+                            bool done = false;
+                            modal.Show(
+                                "Cárcel",
+                                $"Pagar fianza ${bailCost} o perder 1 turno",
+                                "Pagar", "Perder turno",
+                                onYes: () =>
+                                {
+                                    if (SpendMoney(turno, bailCost))
+                                    {
+                                        ToastStatus($"Jugador {turno + 1} pagó fianza ${bailCost} y sigue jugando.", 3f);
+                                    }
+                                    else
+                                    {
+                                        skipTurns[turno] = 1;
+                                        ToastStatus($"No alcanzó para la fianza. Jugador {turno + 1} pierde 1 turno.", 3f);
+                                    }
+                                    done = true;
+                                },
+                                onNo: () =>
+                                {
+                                    skipTurns[turno] = 1;
+                                    ToastStatus($"Jugador {turno + 1} perdió 1 turno (cárcel).", 3f);
+                                    done = true;
+                                }
+                            );
+                            yield return new WaitUntil(() => done);
+                        }
                         break;
                     }
 
+
                 case 20:
                     {
-                        // Descanso: pequeño bonus
                         AddMoney(turno, restBonus);
                         ToastStatus($"Jugador {turno + 1} descansó y cobró ${restBonus} (casilla {idx}).", 3f);
 
-                        bool ok = false;
-                        modal.Show(
-                            "Descanso", $"+${restBonus}", "OK", "Cerrar",
-                            onYes: () => ok = true,
-                            onNo: () => ok = true
-                        );
-                        yield return new WaitUntil(() => ok);
+                        if (!IsCPU(turno))
+                        {
+                            bool ok = false;
+                            modal.Show("Descanso", $"+${restBonus}", "OK", "Cerrar",
+                                onYes: () => ok = true, onNo: () => ok = true);
+                            yield return new WaitUntil(() => ok);
+                        }
                         break;
                     }
             }
@@ -1459,9 +1648,293 @@ public class GameManager : MonoBehaviour
     void UpdateTurnUI()
     {
         if (txtEstado) txtEstado.text = $"Turno: Jugador {turno + 1}";
-        UpdateMoneyUI(); // ← añade esta línea
+        UpdateMoneyUI();
+
+        // Si el jugador actual es CPU, deshabilita el botón “Tirar”
+        if (btnTirar) btnTirar.interactable = !IsCPU(turno);
+
+        // Si debe perder el turno (cárcel), auto-sáltalo sin pedir clic
+        if (skipTurns[turno] > 0 && !IsMovingAny())
+        {
+            skipTurns[turno]--;
+            ToastStatus($"Jugador {turno + 1} pierde 1 turno (cárcel).", 2.5f);
+            turno = 1 - turno;
+            UpdateTurnUI(); // refresca para el nuevo jugador
+            return;
+        }
+
+        // Si es CPU y no está “pensando” ni moviéndose, que tire sola
+        if (IsCPU(turno) && !cpuThinking && !IsMovingAny())
+            StartCoroutine(CpuAutoRoll());
     }
 
+
+    IEnumerator CpuAutoRoll()
+    {
+        cpuThinking = true;
+        yield return new WaitForSeconds(aiThinkDelay);
+
+        if (IsCPU(turno) && !IsMovingAny())
+            OnTirar();
+
+        cpuThinking = false;
+    }
+
+    bool AI_CompletesPairIfBuy(int jugador, int idx)
+    {
+        int mate = MateOf(idx);
+        return mate != -1 && ownerByTile[mate] == jugador;
+    }
+
+    bool AI_ShouldBuyProperty(int jugador, int idx, int price, int rent)
+    {
+        int finalPrice = EffectivePrice(jugador, price);
+        int money = GetMoney(jugador);
+
+        if (money < finalPrice) return false;
+
+        bool completesPair = AI_CompletesPairIfBuy(jugador, idx);
+        int remaining = money - finalPrice;
+
+        // Si completa pareja, acepta conservar menos reserva
+        if (completesPair) return remaining >= aiMinReserve / 2;
+
+        // Rentabilidad (ROI) básica
+        float yield = (float)rent / Mathf.Max(1, price);
+        if (yield >= aiMinYield && remaining >= aiMinReserve) return true;
+
+        // Muy barata → compra aun con reserva un poco menor
+        if (finalPrice <= 120 && remaining >= aiMinReserve - 30) return true;
+
+        return false;
+    }
+    bool AI_ShouldPayBail(int jugador)
+    {
+        int money = GetMoney(jugador);
+        int props = CountOwnedProps(jugador);
+
+        // Regla simple: si puede pagar y le queda colchón, paga.
+        if (money >= bailCost + aiMinReserve) return true;
+
+        // Si tiene varias propiedades, conviene no frenar el avance.
+        if (props >= 3 && money >= bailCost + aiMinReserve / 2) return true;
+
+        // Por defecto, no paga y pierde 1 turno.
+        return false;
+    }
+    // === IA para Evento "Mover ±3" ===
+
+    // Evalúa cuál delta conviene (+3 o -3) para el jugador dado su posición actual.
+    int ChooseBestDeltaForMove(int jugador, int idxAntes)
+    {
+        int scorePlus = ScoreMove(jugador, idxAntes, +3);
+        int scoreMinus = ScoreMove(jugador, idxAntes, -3);
+
+        if (scorePlus == scoreMinus)
+            return (Random.Range(0, 2) == 0) ? +3 : -3;
+
+        return (scorePlus > scoreMinus) ? +3 : -3;
+    }
+
+    // Heurística de puntuación del destino al mover delta pasos
+    int ScoreMove(int jugador, int idxAntes, int delta)
+    {
+        int score = 0;
+        int destino = Wrap(idxAntes + delta);
+        var tile = board.GetTile(destino);
+        if (!tile) return 0;
+
+        // Bonus real por pasar Start (se cobra de verdad luego)
+        if (delta > 0 && idxAntes + delta >= board.TileCount)
+            score += startBonus;
+
+        switch (tile.type)
+        {
+            case TileType.Property:
+                {
+                    int idx = tile.index;
+                    int owner = ownerByTile[idx];
+                    var info = GetProp(idx);
+                    int basePrice = info?.precio ?? demoPropertyPrice;
+                    int baseRent = info?.renta ?? demoPropertyRent;
+
+                    if (owner == -1)
+                    {
+                        // Si la IA compraría aquí y puede pagar → muy positivo
+                        bool buy = AI_ShouldBuyProperty(jugador, idx, basePrice, baseRent)
+                                   && GetMoney(jugador) >= EffectivePrice(jugador, basePrice);
+                        int pairBonus = AI_CompletesPairIfBuy(jugador, idx) ? 40 : 0;
+                        score += buy ? (40 + pairBonus) : 5;
+                    }
+                    else if (owner == jugador)
+                    {
+                        // Casilla propia = segura
+                        score += 20;
+                    }
+                    else
+                    {
+                        // Pagar renta estimada (monopolio, mejoras y buff/debuff)
+                        bool mono = OwnsPair(owner, idx);
+                        float up = GetUpgradeMultForTile(idx);
+                        float mod = GetRentModMultiplierForOwner(owner);
+                        float r = (mono ? baseRent * 1.5f : baseRent) * up * mod;
+                        score -= Mathf.RoundToInt(r);
+                    }
+                    break;
+                }
+
+            case TileType.Infrastructure:
+                {
+                    int idx = tile.index;
+                    int owner = ownerByTile[idx];
+                    int slot = InfraSlotOf(idx);
+                    int baseRent = (slot >= 0 ? infraRentasBase[slot] : 30);
+
+                    if (owner == -1)
+                    {
+                        // Comprar infra suele ser bueno si alcanza
+                        int price = (slot >= 0 ? infraPrecios[slot] : 160);
+                        int finalPrice = EffectivePrice(jugador, price);
+                        bool buy = GetMoney(jugador) >= finalPrice;
+                        score += buy ? 35 : 5;
+                    }
+                    else if (owner == jugador)
+                    {
+                        score += 15;
+                    }
+                    else
+                    {
+                        int owned = CountInfraOwned(owner);
+                        float mod = GetRentModMultiplierForOwner(owner);
+                        int rent = Mathf.RoundToInt(baseRent * Mathf.Max(1, owned) * mod);
+                        score -= rent;
+                    }
+                    break;
+                }
+
+            case TileType.Prize: score += premioMonto; break;
+            case TileType.Rest: score += restBonus; break;
+            case TileType.Tax: score -= impuestoMonto; break;
+
+            case TileType.Maintenance:
+                {
+                    int props = CountOwnedProps(jugador);
+                    score -= props * maintenanceCostPerProperty;
+                    break;
+                }
+
+            case TileType.Construction:
+                {
+                    // Si tengo algo para mejorar y dinero → positivo
+                    bool hasUpgradable = false;
+                    for (int i = 1; i < board.TileCount; i += 2)
+                        if (ownerByTile[i] == jugador && !IsUpgraded(i)) { hasUpgradable = true; break; }
+                    if (hasUpgradable && GetMoney(jugador) >= constructionCost) score += 25;
+                    else score += 5;
+                    break;
+                }
+
+            case TileType.Jail:
+                // Visita cárcel: posible fianza o perder turno si event triggea modal; penalización moderada
+                score -= Mathf.Min(bailCost, 120);
+                break;
+
+            case TileType.GoToJail:
+                // Ir preso = fuerte penalización
+                score -= (bailCost + 150);
+                break;
+
+            case TileType.Robbery:
+                {
+                    // Valor esperado aproximado: si el rival es más rico me conviene un poco
+                    int rival = (jugador == 0) ? 1 : 0;
+                    int myMoney = GetMoney(jugador);
+                    int rvMoney = GetMoney(rival);
+                    score += (rvMoney > myMoney) ? 15 : 5;
+                    break;
+                }
+
+            case TileType.Event:
+                // Neutro/ligeramente positivo (puede salir buff/descuento, etc.)
+                score += 8;
+                break;
+        }
+
+        return score;
+    }
+    // === IA: comprar Infraestructura ===
+    bool AI_ShouldBuyInfra(int jugador, int slot)
+    {
+        int price = infraPrecios[slot];
+        int finalPrice = EffectivePrice(jugador, price);
+        int money = GetMoney(jugador);
+        int remaining = money - finalPrice;                 // <-- declarar ANTES de usar
+
+        // Si ya tengo 1+ infra y me queda (casi) colchón, sube prioridad
+        if (CountInfraOwned(jugador) >= 1 && remaining >= aiMinReserve - 20)
+            return true;
+
+        if (money < finalPrice) return false;
+
+        int ownedAfter = CountInfraOwned(jugador) + 1;
+        int baseRent = infraRentasBase[slot];
+        float mod = GetRentModMultiplierForOwner(jugador); // buff/debuff del dueño
+        int projectedRent = Mathf.RoundToInt(baseRent * Mathf.Max(1, ownedAfter) * mod);
+
+        float yield = (float)projectedRent / Mathf.Max(1, finalPrice);
+
+        if (yield >= aiMinYield && remaining >= aiMinReserve) return true;
+        if (finalPrice <= 160 && remaining >= aiMinReserve - 30) return true;
+
+        return false;
+    }
+
+    // === IA: elegir la mejor propiedad para mejorar ===
+    int AI_PickBestUpgrade(int jugador)
+    {
+        int bestIdx = -1;
+        float bestGain = 0f;
+
+        for (int i = 1; i < board.TileCount; i += 2)
+        {
+            if (ownerByTile[i] != jugador || IsUpgraded(i)) continue;
+
+            var info = GetProp(i);
+            int baseRent = info?.renta ?? demoPropertyRent;
+            bool monopoly = OwnsPair(jugador, i);
+            float mod = GetRentModMultiplierForOwner(jugador);
+
+            float current = (monopoly ? baseRent * 1.5f : baseRent) * mod;
+            float improved = current * constructionMult;
+            float gain = improved - current;
+
+            if (monopoly) gain *= 1.10f; // +10% si es parte de monopolio
+
+            if (gain > bestGain) { bestGain = gain; bestIdx = i; }
+        }
+        return bestIdx;
+    }
+
+    // === IA: mejorar (si conviene y alcanza el dinero) ===
+    void AI_UpgradeBestProperty(int jugador)
+    {
+        int idx = AI_PickBestUpgrade(jugador);
+        if (idx == -1)
+        {
+            ToastStatus("CPU: no hay propiedades para mejorar.", 2f);
+            return;
+        }
+        if (!SpendMoney(jugador, constructionCost))
+        {
+            ToastStatus("CPU: no alcanza para construir.", 2f);
+            return;
+        }
+
+        upgraded[idx] = true;
+        var info = GetProp(idx);
+        string nombre = info != null ? info.nombre : $"Prop {idx}";
+        ShowToast($"CPU mejoró {nombre} (renta ×{constructionMult:0.##}).", 3f);
+    }
 
     int Wrap(int index)
     {
@@ -1586,6 +2059,84 @@ public class GameManager : MonoBehaviour
         for (int i = 1; i < ownerByTile.Length; i += 2)
             if (ownerByTile[i] == owner) list.Add(i);
         return list;
+    }
+    void ApplyRobberyResult(int jugador, RobberyUI.RobberyResult rr)
+    {
+        int rival = (jugador == 0) ? 1 : 0;
+        var tok = (jugador == 0) ? p1 : p2;
+
+        switch (rr.type)
+        {
+            case RobberyUI.RobberyCardType.Steal15:
+            case RobberyUI.RobberyCardType.Steal20:
+            case RobberyUI.RobberyCardType.Steal25:
+                {
+                    float pct = rr.type == RobberyUI.RobberyCardType.Steal15 ? 0.15f :
+                                rr.type == RobberyUI.RobberyCardType.Steal20 ? 0.20f : 0.25f;
+                    int amount = Mathf.RoundToInt(GetMoney(rival) * pct);
+                    PayPlayerToPlayer(rival, jugador, amount);
+                    ToastStatus($"Robo: +${amount} ({pct * 100f:0}% del rival).", 3f);
+                    break;
+                }
+
+            case RobberyUI.RobberyCardType.StealProperty:
+                {
+                    var propsRival = GetOwnedProps(rival);
+                    if (propsRival.Count > 0)
+                    {
+                        int idx = propsRival[UnityEngine.Random.Range(0, propsRival.Count)];
+                        ownerByTile[idx] = jugador;
+
+                        var tile = board.GetTile(idx);
+                        if (tile) tile.SetOwnerMark(jugador == 0 ? ownerColorP1 : ownerColorP2, true);
+
+                        var info = GetProp(idx);
+                        string nombre = info != null ? info.nombre : $"Prop {idx}";
+                        ToastStatus($"Robo: obtuviste {nombre} del rival.", 3f);
+                    }
+                    else
+                    {
+                        int amount = Mathf.RoundToInt(GetMoney(rival) * 0.25f);
+                        PayPlayerToPlayer(rival, jugador, amount);
+                        ToastStatus($"Rival sin propiedades → +${amount} (25%).", 3f);
+                    }
+                    break;
+                }
+
+            case RobberyUI.RobberyCardType.Double15:
+                {
+                    // En 2 jugadores: 15% + 15% = 30% del rival
+                    int amount = Mathf.RoundToInt(GetMoney(rival) * 0.30f);
+                    PayPlayerToPlayer(rival, jugador, amount);
+                    ToastStatus($"Robo doble: +${amount} (30% del rival).", 3f);
+                    break;
+                }
+
+            case RobberyUI.RobberyCardType.Null:
+                {
+                    ToastStatus("Carta vacía: no pasa nada.", 2f);
+                    break;
+                }
+
+            case RobberyUI.RobberyCardType.Jail:
+            case RobberyUI.RobberyCardType.JailLose5:
+            case RobberyUI.RobberyCardType.JailLose10:
+                {
+                    int losePct = rr.type == RobberyUI.RobberyCardType.JailLose5 ? 5 :
+                                  rr.type == RobberyUI.RobberyCardType.JailLose10 ? 10 : 0;
+                    if (losePct > 0)
+                    {
+                        int pay = Mathf.RoundToInt(GetMoney(jugador) * (losePct / 100f));
+                        PayPlayerToPlayer(jugador, rival, pay);
+                        ToastStatus($"¡Defensa! Pagas {losePct}% (${pay}) al rival.", 3f);
+                    }
+
+                    tok.TeleportTo(board.PathPositions[10], 10);
+                    skipTurns[jugador] = 1;
+                    ToastStatus("Vas a Cárcel y pierdes 1 turno.", 3f);
+                    break;
+                }
+        }
     }
 
     // Devuelve una propiedad MEJORADA del owner al azar (o -1 si no hay)
