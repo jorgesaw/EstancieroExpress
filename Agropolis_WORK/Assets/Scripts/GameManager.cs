@@ -372,6 +372,35 @@ public class GameManager : MonoBehaviour
 
     void Start()
     {
+        // === Modo elegido en menú ===
+        // 0 = Vs CPU (P1 humano, P2 CPU)
+        // 1 = Local 2 jugadores (dos humanos)
+        // 2 = Online (placeholder: por ahora local)
+        int mode = PlayerPrefs.GetInt("MODE", -1);
+        if (mode != -1)
+        {
+            switch (mode)
+            {
+                case 0: // 1 Jugador vs CPU
+                    cpuP1 = false;  // P1 Humano
+                    cpuP2 = true;   // P2 CPU
+                    break;
+
+                case 1: // 2 Jugadores (local)
+                    cpuP1 = false;  // P1 Humano
+                    cpuP2 = false;  // P2 Humano
+                    break;
+
+                case 2: // Online (placeholder)
+                    cpuP1 = false;
+                    cpuP2 = false;
+                    // Si tienes ToastUI, puedes avisar:
+                    // ShowToast("Modo En línea: próximamente (ahora local).", 3f);
+                    break;
+            }
+            PlayerPrefs.DeleteKey("MODE"); // limpiar la elección
+        }
+
         // Instanciar fichas en la salida (índice 0) con una leve separación
         Vector3 start = board.PathPositions[0];
         p1 = Instantiate(player1Prefab, start + new Vector3(-0.35f, 0, 0), Quaternion.identity);
