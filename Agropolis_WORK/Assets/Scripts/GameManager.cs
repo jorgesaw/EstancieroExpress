@@ -3,9 +3,18 @@ using System.Collections.Generic; // ← NUEVO
 using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
+using Photon.Pun;
 
 public class GameManager : MonoBehaviour
 {
+    PhotonView pv;         // <- NUEVO (debe estar DENTRO de la clase)
+    bool isMaster;         // <- NUEVO (debe estar DENTRO de la clase)
+
+    // === ONLINE (PHOTON) ===
+    public bool esOnline = false;  // ¿estamos conectados y dentro de una sala?
+    public int indiceLocal = 0;    // 0 = P1, 1 = P2
+    public int modoActual = -1;    // guardo el modo elegido (0,1,3,4)
+
     [Header("Refs")]
     public BoardManager board;
     public PlayerToken player1Prefab;
@@ -370,63 +379,103 @@ public class GameManager : MonoBehaviour
 
     Tile lastCurrent, lastPreview;
 
-    void Start()
+void Start()
+{
+    // === Modo elegido en menú ===
+    // 0 = Vs CPU (P1 humano, P2 CPU)
+    // 1 = Local 2 jugadores (dos humanos)
+    // 2 = Online (placeholder: por ahora local)
+    // 3 = Online: 1 vs 1 (dos humanos)
+    // 4 = Online: vs CPU (P1 humano, P2 CPU)
+
+    // === ONLINE: leer modo y detectar si estamos en sala
+    modoActual = PlayerPrefs.GetInt("MODE", -1);
+    esOnline = PhotonNetwork.IsConnected && PhotonNetwork.InRoom;
+
+    // Asignar qué jugador controla este cliente SOLO en modos online
+    if (modoActual == 3)          // Online: 1 vs 1
     {
-        // === Modo elegido en menú ===
-        // 0 = Vs CPU (P1 humano, P2 CPU)
-        // 1 = Local 2 jugadores (dos humanos)
-        // 2 = Online (placeholder: por ahora local)
-        int mode = PlayerPrefs.GetInt("MODE", -1);
-        if (mode != -1)
+        // MasterClient será P1, el otro P2
+        indiceLocal = PhotonNetwork.IsMasterClient ? 0 : 1;
+    }
+    else if (modoActual == 4)     // Online: vs CPU
+    {
+        indiceLocal = 0;          // tú siempre eres P1
+    }
+
+    // Configurar qué jugadores son CPU / humanos según el modo
+    if (modoActual != -1)
+    {
+        switch (modoActual)
         {
-            switch (mode)
-            {
-                case 0: // 1 Jugador vs CPU
-                    cpuP1 = false;  // P1 Humano
-                    cpuP2 = true;   // P2 CPU
-                    break;
+            case 0: // 1 Jugador vs CPU
+                cpuP1 = false;  // P1 Humano
+                cpuP2 = true;   // P2 CPU
+                break;
 
-                case 1: // 2 Jugadores (local)
-                    cpuP1 = false;  // P1 Humano
-                    cpuP2 = false;  // P2 Humano
-                    break;
+            case 1: // 2 Jugadores (local)
+                cpuP1 = false;  // P1 Humano
+                cpuP2 = false;  // P2 Humano
+                break;
 
-                case 2: // Online (placeholder)
-                    cpuP1 = false;
-                    cpuP2 = false;
-                    // Si tienes ToastUI, puedes avisar:
-                    // ShowToast("Modo En línea: próximamente (ahora local).", 3f);
-                    break;
-            }
-            PlayerPrefs.DeleteKey("MODE"); // limpiar la elección
+            case 2: // Online (placeholder – ahora local)
+                cpuP1 = false;
+                cpuP2 = false;
+                break;
+
+            case 3: // Online 1 vs 1 (dos humanos)
+                cpuP1 = false;
+                cpuP2 = false;
+                break;
+
+            case 4: // Online vs CPU (P1 humano, P2 CPU)
+                cpuP1 = false;
+                cpuP2 = true;
+                break;
         }
 
-        // Instanciar fichas en la salida (índice 0) con una leve separación
-        Vector3 start = board.PathPositions[0];
-        p1 = Instantiate(player1Prefab, start + new Vector3(-0.35f, 0, 0), Quaternion.identity);
-        p2 = Instantiate(player2Prefab, start + new Vector3(0.35f, 0, 0), Quaternion.identity);
-        p1.boardIndex = 0;
-        p2.boardIndex = 0;
-        // Elegir jugador inicial al azar (0 ó 1)
-        turno = UnityEngine.Random.Range(0, 2);
+        // limpiar la elección para no arrastrarla a la próxima partida
+        PlayerPrefs.DeleteKey("MODE");
+    }
 
-        if (btnTirar) btnTirar.onClick.AddListener(OnTirar);
+    // === Instanciar fichas en la salida (índice 0) con una leve separación
+    Vector3 start = board.PathPositions[0];
+    p1 = Instantiate(player1Prefab, start + new Vector3(-0.35f, 0, 0), Quaternion.identity);
+    p2 = Instantiate(player2Prefab, start + new Vector3(0.35f, 0, 0), Quaternion.identity);
+    p1.boardIndex = 0;
+    p2.boardIndex = 0;
 
-        dinero1 = startMoney;          // ← NUEVO
-        dinero2 = startMoney;          // ← NUEVO
-        UpdateMoneyUI();               // ← NUEVO
-        ownerByTile = new int[board.TileCount];
-        for (int i = 0; i < ownerByTile.Length; i++) ownerByTile[i] = -1;
-        BuildDefaultProps();  // ← crea la tabla de propiedades (nombres/grupos)
-        ApplyTileLabels();    // ← pinta los nombres en cada casilla
-        for (int i = 0; i < 2; i++)
-        {
-            rentModExpireTile[i] = -1;
-            rentModArmed[i] = false;
-        }
+    // Elegir jugador inicial al azar (0 ó 1)
+    turno = UnityEngine.Random.Range(0, 2);
 
-        UpdateTurnUI();
-        HighlightCurrentOnly();
+    if (btnTirar) btnTirar.onClick.AddListener(OnTirar);
+
+    // Dinero inicial y estado de propiedades
+    dinero1 = startMoney;
+    dinero2 = startMoney;
+    UpdateMoneyUI();
+
+    ownerByTile = new int[board.TileCount];
+    for (int i = 0; i < ownerByTile.Length; i++) ownerByTile[i] = -1;
+
+    BuildDefaultProps();  // crea la tabla de propiedades (nombres/grupos)
+    ApplyTileLabels();    // pinta los nombres en cada casilla
+
+    for (int i = 0; i < 2; i++)
+    {
+        rentModExpireTile[i] = -1;
+        rentModArmed[i] = false;
+    }
+
+    UpdateTurnUI();
+    HighlightCurrentOnly();
+        // === ONLINE (1 vs 1) ===
+        pv = GetComponent<PhotonView>();
+        isMaster = PhotonNetwork.IsMasterClient;
+
+        // Al arrancar, el master envía un primer snapshot
+        if (esOnline && modoActual == 3 && isMaster)
+            NetSyncALL();
     }
 
     void OnDestroy()
@@ -436,7 +485,17 @@ public class GameManager : MonoBehaviour
 
     void OnTirar()
     {
-        if (IsMovingAny()) return;
+        // En 1vs1 online: si no soy master, solo pido tirar y salgo
+        if (esOnline && modoActual == 3 && !isMaster)
+        {
+            pv.RPC("RPC_RequestRoll", RpcTarget.MasterClient);
+            return;
+        }
+
+        // Si es 1 vs 1 online y no es mi turno, no hago nada
+        if (esOnline && modoActual == 3 && turno != indiceLocal)
+        return;
+    if (IsMovingAny()) return;
 
         // ¿Debe saltar el turno por cárcel?
         if (skipTurns[turno] > 0)
@@ -1201,6 +1260,11 @@ public class GameManager : MonoBehaviour
 
             // Termina el turno inmediatamente
             turno = 1 - turno;
+            // Enviar snapshot completo al terminar la jugada (solo master)
+            if (esOnline && modoActual == 3 && isMaster)
+            {
+                NetSyncALL();
+            }
             UpdateTurnUI();
             if (btnTirar) btnTirar.interactable = true;
             yield break;
@@ -1668,11 +1732,112 @@ public class GameManager : MonoBehaviour
         // Consumir cooldown por jugador (si tenía bloqueo de catástrofe, se limpia ahora)
         if (playerCatCooldown[prevJugador] > 0)
             playerCatCooldown[prevJugador] = 0;
-
+        // Enviar snapshot completo al terminar la jugada (solo master)
+        if (esOnline && modoActual == 3 && isMaster)
+            NetSyncALL();
         UpdateTurnUI();
         if (btnTirar) btnTirar.interactable = true;
 
     }
+    // ===================== SINCRONIZACIÓN ONLINE (1 vs 1) =====================
+
+    // Llama el MASTER al terminar su jugada (o al entrar a la sala)
+    void NetSyncALL()
+    {
+        // Paquetes simples para RPC (primitivos y arrays)
+        int p1Idx = (p1 != null) ? p1.boardIndex : 0;
+        int p2Idx = (p2 != null) ? p2.boardIndex : 0;
+
+        int[] owners = ownerByTile;               // int[]
+        bool[] ups = upgraded;                  // bool[]
+        int[] sk = new int[] { skipTurns[0], skipTurns[1] };
+        bool[] disc = new bool[] { hasDiscount[0], hasDiscount[1] };
+
+        // rent mods (por si los usas durante la partida)
+        int[] rmType = new int[] { (int)rentMod[0], (int)rentMod[1] };
+        int[] rmLaps = new int[] { rentModLapsLeft[0], rentModLapsLeft[1] };
+        int[] rmExp = new int[] { rentModExpireTile[0], rentModExpireTile[1] };
+        bool[] rmArm = new bool[] { rentModArmed[0], rentModArmed[1] };
+
+        pv.RPC("RPC_Snapshot", RpcTarget.Others,
+            turno, p1Idx, p2Idx, dinero1, dinero2,
+            owners, ups, sk, disc, rmType, rmLaps, rmExp, rmArm
+        );
+    }
+
+    [PunRPC]
+    void RPC_RequestRoll()
+    {
+        // Este RPC SOLO lo recibe el master. Ejecuta la tirada localmente.
+        if (!isMaster) return;
+        OnTirar();
+    }
+
+    [PunRPC]
+    void RPC_Snapshot(
+        int turnoRemote, int p1Idx, int p2Idx, int d1, int d2,
+        int[] owners, bool[] ups, int[] sk, bool[] disc,
+        int[] rmType, int[] rmLaps, int[] rmExp, bool[] rmArm
+    )
+    {
+        // Aplicar datos de estado
+        turno = turnoRemote;
+        dinero1 = d1;
+        dinero2 = d2;
+
+        if (ownerByTile == null || ownerByTile.Length != owners.Length)
+            ownerByTile = new int[owners.Length];
+        System.Array.Copy(owners, ownerByTile, owners.Length);
+
+        if (upgraded == null || upgraded.Length != ups.Length)
+            upgraded = new bool[ups.Length];
+        System.Array.Copy(ups, upgraded, ups.Length);
+
+        skipTurns[0] = sk[0];
+        skipTurns[1] = sk[1];
+
+        hasDiscount[0] = disc[0];
+        hasDiscount[1] = disc[1];
+
+        rentMod[0] = (RentMod)rmType[0];
+        rentMod[1] = (RentMod)rmType[1];
+        rentModLapsLeft[0] = rmLaps[0];
+        rentModLapsLeft[1] = rmLaps[1];
+        rentModExpireTile[0] = rmExp[0];
+        rentModExpireTile[1] = rmExp[1];
+        rentModArmed[0] = rmArm[0];
+        rentModArmed[1] = rmArm[1];
+
+        // Teletransportar fichas a índices recibidos (sin animación)
+        if (p1 != null)
+            p1.TeleportTo(board.PathPositions[p1Idx], p1Idx);
+        if (p2 != null)
+            p2.TeleportTo(board.PathPositions[p2Idx], p2Idx);
+
+        // Repintar marcas de dueño en el tablero según ownerByTile[]
+        for (int i = 1; i < board.TileCount; i++)
+        {
+            var t = board.GetTile(i);
+            if (!t) continue;
+
+            int own = (i < ownerByTile.Length) ? ownerByTile[i] : -1;
+            if (own == -1)
+            {
+                t.SetOwnerMark(Color.clear, false);
+            }
+            else
+            {
+                var c = (own == 0) ? ownerColorP1 : ownerColorP2;
+                t.SetOwnerMark(c, true);
+            }
+        }
+
+        // UI
+        UpdateMoneyUI();
+        UpdateTurnUI();
+        HighlightCurrentOnly();
+    }
+    // =================== FIN SINCRONIZACIÓN ONLINE (1 vs 1) ====================
 
     void UpdateTurnUI()
     {
