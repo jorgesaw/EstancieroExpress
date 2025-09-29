@@ -132,7 +132,7 @@ public class GameManager : MonoBehaviour
     enum RentMod { None, Buff, Debuff }
     RentMod[] rentMod = new RentMod[2];    // por jugador (J1=0, J2=1)
     int[] rentModLapsLeft = new int[2];
-  
+
     // --- Seguimiento por casilla de origen del efecto ---
     int[] rentModExpireTile = new int[2]; // casilla Evento donde se activó (−1 = ninguno)
     bool[] rentModArmed = new bool[2]; // se “arma” al salir de esa casilla
@@ -223,6 +223,7 @@ public class GameManager : MonoBehaviour
             }
         }
     }
+
     [Header("Infraestructura (especial comprable) — opción B")]
     public int[] infraIndices = { 6, 14, 24, 32 };
     public string[] infraNombres = { "Planta Reciclaje", "Parque Eólico", "Planta Solar", "Planta Hidroeléctrica" };
@@ -379,101 +380,112 @@ public class GameManager : MonoBehaviour
 
     Tile lastCurrent, lastPreview;
 
-void Start()
-{
-    // === Modo elegido en menú ===
-    // 0 = Vs CPU (P1 humano, P2 CPU)
-    // 1 = Local 2 jugadores (dos humanos)
-    // 2 = Online (placeholder: por ahora local)
-    // 3 = Online: 1 vs 1 (dos humanos)
-    // 4 = Online: vs CPU (P1 humano, P2 CPU)
-
-    // === ONLINE: leer modo y detectar si estamos en sala
-    modoActual = PlayerPrefs.GetInt("MODE", -1);
-    esOnline = PhotonNetwork.IsConnected && PhotonNetwork.InRoom;
-
-    // Asignar qué jugador controla este cliente SOLO en modos online
-    if (modoActual == 3)          // Online: 1 vs 1
+    void Start()
     {
-        // MasterClient será P1, el otro P2
-        indiceLocal = PhotonNetwork.IsMasterClient ? 0 : 1;
-    }
-    else if (modoActual == 4)     // Online: vs CPU
-    {
-        indiceLocal = 0;          // tú siempre eres P1
-    }
-
-    // Configurar qué jugadores son CPU / humanos según el modo
-    if (modoActual != -1)
-    {
-        switch (modoActual)
-        {
-            case 0: // 1 Jugador vs CPU
-                cpuP1 = false;  // P1 Humano
-                cpuP2 = true;   // P2 CPU
-                break;
-
-            case 1: // 2 Jugadores (local)
-                cpuP1 = false;  // P1 Humano
-                cpuP2 = false;  // P2 Humano
-                break;
-
-            case 2: // Online (placeholder – ahora local)
-                cpuP1 = false;
-                cpuP2 = false;
-                break;
-
-            case 3: // Online 1 vs 1 (dos humanos)
-                cpuP1 = false;
-                cpuP2 = false;
-                break;
-
-            case 4: // Online vs CPU (P1 humano, P2 CPU)
-                cpuP1 = false;
-                cpuP2 = true;
-                break;
-        }
-
-        // limpiar la elección para no arrastrarla a la próxima partida
-        PlayerPrefs.DeleteKey("MODE");
-    }
-
-    // === Instanciar fichas en la salida (índice 0) con una leve separación
-    Vector3 start = board.PathPositions[0];
-    p1 = Instantiate(player1Prefab, start + new Vector3(-0.35f, 0, 0), Quaternion.identity);
-    p2 = Instantiate(player2Prefab, start + new Vector3(0.35f, 0, 0), Quaternion.identity);
-    p1.boardIndex = 0;
-    p2.boardIndex = 0;
-
-    // Elegir jugador inicial al azar (0 ó 1)
-    turno = UnityEngine.Random.Range(0, 2);
-
-    if (btnTirar) btnTirar.onClick.AddListener(OnTirar);
-
-    // Dinero inicial y estado de propiedades
-    dinero1 = startMoney;
-    dinero2 = startMoney;
-    UpdateMoneyUI();
-
-    ownerByTile = new int[board.TileCount];
-    for (int i = 0; i < ownerByTile.Length; i++) ownerByTile[i] = -1;
-
-    BuildDefaultProps();  // crea la tabla de propiedades (nombres/grupos)
-    ApplyTileLabels();    // pinta los nombres en cada casilla
-
-    for (int i = 0; i < 2; i++)
-    {
-        rentModExpireTile[i] = -1;
-        rentModArmed[i] = false;
-    }
-
-    UpdateTurnUI();
-    HighlightCurrentOnly();
-        // === ONLINE (1 vs 1) ===
+        // === ONLINE (setup base) ===
         pv = GetComponent<PhotonView>();
         isMaster = PhotonNetwork.IsMasterClient;
 
-        // Al arrancar, el master envía un primer snapshot
+        // === Modo elegido en menú ===
+        // 0 = Vs CPU (P1 humano, P2 CPU)
+        // 1 = Local 2 jugadores (dos humanos)
+        // 2 = Online (placeholder: por ahora local)
+        // 3 = Online: 1 vs 1 (dos humanos)
+        // 4 = Online: vs CPU (P1 humano, P2 CPU)
+        modoActual = PlayerPrefs.GetInt("MODE", -1);
+        esOnline = PhotonNetwork.IsConnected && PhotonNetwork.InRoom;
+
+        // Asignar qué jugador controla este cliente SOLO en modos online
+        if (modoActual == 3)          // Online: 1 vs 1
+        {
+            // MasterClient será P1, el otro P2
+            indiceLocal = isMaster ? 0 : 1;
+        }
+        else if (modoActual == 4)     // Online: vs CPU
+        {
+            indiceLocal = 0;          // tú siempre eres P1
+        }
+
+        // Configurar qué jugadores son CPU / humanos según el modo
+        if (modoActual != -1)
+        {
+            switch (modoActual)
+            {
+                case 0: // 1 Jugador vs CPU
+                    cpuP1 = false;  // P1 Humano
+                    cpuP2 = true;   // P2 CPU
+                    break;
+
+                case 1: // 2 Jugadores (local)
+                    cpuP1 = false;  // P1 Humano
+                    cpuP2 = false;  // P2 Humano
+                    break;
+
+                case 2: // Online (placeholder – ahora local)
+                    cpuP1 = false;
+                    cpuP2 = false;
+                    break;
+
+                case 3: // Online 1 vs 1 (dos humanos)
+                    cpuP1 = false;
+                    cpuP2 = false;
+                    break;
+
+                case 4: // Online vs CPU (P1 humano, P2 CPU)
+                    cpuP1 = false;
+                    cpuP2 = true;
+                    break;
+            }
+
+            // limpiar la elección para no arrastrarla a la próxima partida
+            PlayerPrefs.DeleteKey("MODE");
+        }
+
+        // === Instanciar fichas en la salida (índice 0) con una leve separación
+        Vector3 start = board.PathPositions[0];
+        p1 = Instantiate(player1Prefab, start + new Vector3(-0.35f, 0, 0), Quaternion.identity);
+        p2 = Instantiate(player2Prefab, start + new Vector3(0.35f, 0, 0), Quaternion.identity);
+        p1.boardIndex = 0;
+        p2.boardIndex = 0;
+
+        // === Turno inicial ===
+        if (esOnline && modoActual == 3)
+        {
+            // Sólo el MASTER decide el turno inicial; el cliente espera snapshot.
+            turno = isMaster ? UnityEngine.Random.Range(0, 2) : 0;
+
+            // En el CLIENTE deshabilitamos el botón Tirar hasta recibir snapshot inicial
+            if (!isMaster && btnTirar) btnTirar.interactable = false;
+        }
+        else
+        {
+            // Local / vs CPU → random normal
+            turno = UnityEngine.Random.Range(0, 2);
+        }
+
+        if (btnTirar) btnTirar.onClick.AddListener(OnTirar);
+
+        // Dinero inicial y estado de propiedades
+        dinero1 = startMoney;
+        dinero2 = startMoney;
+        UpdateMoneyUI();
+
+        ownerByTile = new int[board.TileCount];
+        for (int i = 0; i < ownerByTile.Length; i++) ownerByTile[i] = -1;
+
+        BuildDefaultProps();  // crea la tabla de propiedades (nombres/grupos)
+        ApplyTileLabels();    // pinta los nombres en cada casilla
+
+        for (int i = 0; i < 2; i++)
+        {
+            rentModExpireTile[i] = -1;
+            rentModArmed[i] = false;
+        }
+
+        UpdateTurnUI();
+        HighlightCurrentOnly();
+
+        // === ONLINE (1 vs 1): al arrancar, el MASTER envía un primer snapshot
         if (esOnline && modoActual == 3 && isMaster)
             NetSyncALL();
     }
@@ -494,8 +506,8 @@ void Start()
 
         // Si es 1 vs 1 online y no es mi turno, no hago nada
         if (esOnline && modoActual == 3 && turno != indiceLocal)
-        return;
-    if (IsMovingAny()) return;
+            return;
+        if (IsMovingAny()) return;
 
         // ¿Debe saltar el turno por cárcel?
         if (skipTurns[turno] > 0)
@@ -515,6 +527,7 @@ void Start()
     {
         return (p1 && p1.isMoving) || (p2 && p2.isMoving);
     }
+
     // Sortea un evento estándar según los pesos configurados (suman 60)
     StdEventType PickStandardEvent()
     {
@@ -1081,19 +1094,18 @@ void Start()
         // Si es CPU: elegir una carta aleatoria y aplicar sin UI
         if (IsCPU(jugador))
         {
-            // Si tu RobberyUI expone las cartas, puedes samplear ahí. Si no, random simple:
             var opciones = new[]
             {
-            RobberyUI.RobberyCardType.Steal15,
-            RobberyUI.RobberyCardType.Steal20,
-            RobberyUI.RobberyCardType.Steal25,
-            RobberyUI.RobberyCardType.StealProperty,
-            RobberyUI.RobberyCardType.Double15,
-            RobberyUI.RobberyCardType.Null,
-            RobberyUI.RobberyCardType.Jail,
-            RobberyUI.RobberyCardType.JailLose5,
-            RobberyUI.RobberyCardType.JailLose10,
-        };
+                RobberyUI.RobberyCardType.Steal15,
+                RobberyUI.RobberyCardType.Steal20,
+                RobberyUI.RobberyCardType.Steal25,
+                RobberyUI.RobberyCardType.StealProperty,
+                RobberyUI.RobberyCardType.Double15,
+                RobberyUI.RobberyCardType.Null,
+                RobberyUI.RobberyCardType.Jail,
+                RobberyUI.RobberyCardType.JailLose5,
+                RobberyUI.RobberyCardType.JailLose10,
+            };
             var pick = opciones[Random.Range(0, opciones.Length)];
             var rrCPU = new RobberyUI.RobberyResult { type = pick };
             ApplyRobberyResult(jugador, rrCPU);
@@ -1249,8 +1261,10 @@ void Start()
         // Actualiza resaltado a la posición final
         ClearHighlights();
         HighlightTile(board.GetTile(player.boardIndex), currentColor, ref lastCurrent);
-        // === Compra/propiedad (v1) ===
+
+        // ====== Resolver casilla de destino (propiedades, infra, eventos, etc.) ======
         var landedTile = board.GetTile(player.boardIndex);
+
         // Ir a Cárcel (30): ir a 10 y perder 1 turno (sin opción de fianza aquí)
         if (landedTile && landedTile.type == TileType.GoToJail)
         {
@@ -1259,7 +1273,10 @@ void Start()
             ToastStatus($"Jugador {turno + 1} fue enviado a Cárcel. Pierde 1 turno.", 3f);
 
             // Termina el turno inmediatamente
+            int prevJugador = turno;
             turno = 1 - turno;
+            if (playerCatCooldown[prevJugador] > 0) playerCatCooldown[prevJugador] = 0;
+
             // Enviar snapshot completo al terminar la jugada (solo master)
             if (esOnline && modoActual == 3 && isMaster)
             {
@@ -1270,12 +1287,13 @@ void Start()
             yield break;
         }
 
-        if (landedTile && (landedTile.index % 2 == 1)) // solo impares = propiedades
+        // --- PROPIEDAD (impares) ---
+        if (landedTile && (landedTile.index % 2 == 1))
         {
             int idx = landedTile.index;
             int duenoActual = ownerByTile[idx];
 
-            if (duenoActual == -1) // sin dueño → compra IA / modal humano
+            if (duenoActual == -1)
             {
                 var info = GetProp(idx);
                 int price = info?.precio ?? demoPropertyPrice;
@@ -1294,7 +1312,6 @@ void Start()
                         landedTile.SetOwnerMark(colorDueno, true);
                         ToastStatus($"CPU compró {(info != null ? info.nombre : $"casilla {idx}")} por ${finalPrice}.", 2.5f);
                     }
-                    // Si decide no comprar, no se muestra modal
                 }
                 else
                 {
@@ -1329,7 +1346,6 @@ void Start()
             }
             else
             {
-                // Si el dueño es el rival, cobro renta v1
                 if (duenoActual != turno)
                 {
                     var info = GetProp(idx);
@@ -1339,30 +1355,24 @@ void Start()
                     float r = parCompleto ? baseRent * 1.5f : baseRent;
                     float up = GetUpgradeMultForTile(idx);
                     r *= up;
+                    r *= GetRentModMultiplierForOwner(duenoActual);
+                    int rentToPay = Mathf.RoundToInt(r);
 
-                    r *= GetRentModMultiplierForOwner(duenoActual);   // +25% o -25% según el dueño
-                    int rent = Mathf.RoundToInt(r);
-
-                    // Toast con el desglose del alquiler
                     string monoTag = parCompleto ? " ×1.5 (monopolio)" : "";
-                    string upTag = up > 1f ? $" ×{up:0.##} (mejora)" : "";   // ← NUEVO
+                    string upTag = up > 1f ? $" ×{up:0.##} (mejora)" : "";
                     float mod = GetRentModMultiplierForOwner(duenoActual);
                     string modTag = mod > 1f ? " ×1.25 (buff)" : (mod < 1f ? " ×0.75 (debuff)" : "");
+                    ShowToast($"Alquiler base ${baseRent}{monoTag}{upTag}{modTag} → Total ${rentToPay}", 3f);
 
-                    ShowToast($"Alquiler base ${baseRent}{monoTag}{upTag}{modTag} → Total ${rent}", 3f);
-
-
-                    PayPlayerToPlayer(turno, duenoActual, rent);
+                    PayPlayerToPlayer(turno, duenoActual, rentToPay);
                     if (txtEstado) txtEstado.text =
-                        $"Jugador {turno + 1} pagó renta ${rent} a Jugador {duenoActual + 1}" +
+                        $"Jugador {turno + 1} pagó renta ${rentToPay} a Jugador {duenoActual + 1}" +
                         (info != null ? $" ({info.nombre})" : "") +
                         (parCompleto ? " (+50% por monopolio)" : "") + RentModTag(duenoActual) + ".";
                 }
-
-                // Si es tu propia propiedad, no pasa nada
             }
-
         }
+
         // --- Infraestructura (pares especiales comprables) ---
         if (landedTile && landedTile.type == TileType.Infrastructure)
         {
@@ -1441,14 +1451,12 @@ void Start()
                     $"Jugador {turno + 1} pagó renta ${rent} de infraestructura a Jugador {duenoActual + 1} ({infraNombres[slot]}, posee {owned})"
                     + RentModTag(duenoActual) + ".";
                 }
-
-                // Si es tuya, no pasa nada
             }
         }
+
         // --- ROBO (12, 22, 38) ---
         if (landedTile && landedTile.type == TileType.Robbery)
         {
-            // Abre la UI de Robo y aplica el resultado
             yield return ResolveRobbery(turno);
         }
 
@@ -1457,12 +1465,10 @@ void Start()
         {
             if (IsCPU(turno))
             {
-                // CPU: elige la mejor mejora posible y la paga si alcanza
                 AI_UpgradeBestProperty(turno);
             }
             else
             {
-                // HUMANO: tu flujo actual de elegir qué mejorar
                 var upgradables = new System.Collections.Generic.List<int>();
                 for (int i = 1; i < board.TileCount; i += 2)
                     if (ownerByTile[i] == turno && !IsUpgraded(i)) upgradables.Add(i);
@@ -1592,15 +1598,12 @@ void Start()
 
             if (props <= 0)
             {
-                // Sin propiedades: no cobres nada ni muestres modal
                 ToastStatus($"Jugador {turno + 1} no tiene propiedades. Mantenimiento $0.", 2.5f);
             }
             else
             {
-                // Cobrar mantenimiento
                 PayToBank(turno, total);
 
-                // Solo mostrar el modal si NO es la CPU
                 if (!IsCPU(turno))
                 {
                     bool done = false;
@@ -1726,19 +1729,21 @@ void Start()
             }
         }
 
-        int prevJugador = turno;  // el que acaba de jugar
+        int prevJugador2 = turno;  // el que acaba de jugar
         turno = 1 - turno;
 
         // Consumir cooldown por jugador (si tenía bloqueo de catástrofe, se limpia ahora)
-        if (playerCatCooldown[prevJugador] > 0)
-            playerCatCooldown[prevJugador] = 0;
+        if (playerCatCooldown[prevJugador2] > 0)
+            playerCatCooldown[prevJugador2] = 0;
+
         // Enviar snapshot completo al terminar la jugada (solo master)
         if (esOnline && modoActual == 3 && isMaster)
             NetSyncALL();
+
         UpdateTurnUI();
         if (btnTirar) btnTirar.interactable = true;
-
     }
+
     // ===================== SINCRONIZACIÓN ONLINE (1 vs 1) =====================
 
     // Llama el MASTER al terminar su jugada (o al entrar a la sala)
@@ -1836,6 +1841,10 @@ void Start()
         UpdateMoneyUI();
         UpdateTurnUI();
         HighlightCurrentOnly();
+
+        // IMPORTANTE: habilitar botón Tirar en el CLIENTE tras snapshot inicial
+        if (esOnline && modoActual == 3 && !isMaster && btnTirar)
+            btnTirar.interactable = true;
     }
     // =================== FIN SINCRONIZACIÓN ONLINE (1 vs 1) ====================
 
@@ -1845,7 +1854,9 @@ void Start()
         UpdateMoneyUI();
 
         // Si el jugador actual es CPU, deshabilita el botón “Tirar”
-        if (btnTirar) btnTirar.interactable = !IsCPU(turno);
+        if (btnTirar) btnTirar.interactable = !IsCPU(turno) && ( // si NO es CPU
+            !(esOnline && modoActual == 3 && !isMaster && !btnTirar.interactable) // y no estamos esperando snapshot en cliente
+        );
 
         // Si debe perder el turno (cárcel), auto-sáltalo sin pedir clic
         if (skipTurns[turno] > 0 && !IsMovingAny())
@@ -1954,7 +1965,6 @@ void Start()
 
                     if (owner == -1)
                     {
-                        // Si la IA compraría aquí y puede pagar → muy positivo
                         bool buy = AI_ShouldBuyProperty(jugador, idx, basePrice, baseRent)
                                    && GetMoney(jugador) >= EffectivePrice(jugador, basePrice);
                         int pairBonus = AI_CompletesPairIfBuy(jugador, idx) ? 40 : 0;
@@ -1962,12 +1972,10 @@ void Start()
                     }
                     else if (owner == jugador)
                     {
-                        // Casilla propia = segura
                         score += 20;
                     }
                     else
                     {
-                        // Pagar renta estimada (monopolio, mejoras y buff/debuff)
                         bool mono = OwnsPair(owner, idx);
                         float up = GetUpgradeMultForTile(idx);
                         float mod = GetRentModMultiplierForOwner(owner);
@@ -1986,7 +1994,6 @@ void Start()
 
                     if (owner == -1)
                     {
-                        // Comprar infra suele ser bueno si alcanza
                         int price = (slot >= 0 ? infraPrecios[slot] : 160);
                         int finalPrice = EffectivePrice(jugador, price);
                         bool buy = GetMoney(jugador) >= finalPrice;
@@ -2019,7 +2026,6 @@ void Start()
 
             case TileType.Construction:
                 {
-                    // Si tengo algo para mejorar y dinero → positivo
                     bool hasUpgradable = false;
                     for (int i = 1; i < board.TileCount; i += 2)
                         if (ownerByTile[i] == jugador && !IsUpgraded(i)) { hasUpgradable = true; break; }
@@ -2029,18 +2035,15 @@ void Start()
                 }
 
             case TileType.Jail:
-                // Visita cárcel: posible fianza o perder turno si event triggea modal; penalización moderada
                 score -= Mathf.Min(bailCost, 120);
                 break;
 
             case TileType.GoToJail:
-                // Ir preso = fuerte penalización
                 score -= (bailCost + 150);
                 break;
 
             case TileType.Robbery:
                 {
-                    // Valor esperado aproximado: si el rival es más rico me conviene un poco
                     int rival = (jugador == 0) ? 1 : 0;
                     int myMoney = GetMoney(jugador);
                     int rvMoney = GetMoney(rival);
@@ -2049,22 +2052,21 @@ void Start()
                 }
 
             case TileType.Event:
-                // Neutro/ligeramente positivo (puede salir buff/descuento, etc.)
                 score += 8;
                 break;
         }
 
         return score;
     }
+
     // === IA: comprar Infraestructura ===
     bool AI_ShouldBuyInfra(int jugador, int slot)
     {
         int price = infraPrecios[slot];
         int finalPrice = EffectivePrice(jugador, price);
         int money = GetMoney(jugador);
-        int remaining = money - finalPrice;                 // <-- declarar ANTES de usar
+        int remaining = money - finalPrice;
 
-        // Si ya tengo 1+ infra y me queda (casi) colchón, sube prioridad
         if (CountInfraOwned(jugador) >= 1 && remaining >= aiMinReserve - 20)
             return true;
 
@@ -2072,7 +2074,7 @@ void Start()
 
         int ownedAfter = CountInfraOwned(jugador) + 1;
         int baseRent = infraRentasBase[slot];
-        float mod = GetRentModMultiplierForOwner(jugador); // buff/debuff del dueño
+        float mod = GetRentModMultiplierForOwner(jugador);
         int projectedRent = Mathf.RoundToInt(baseRent * Mathf.Max(1, ownedAfter) * mod);
 
         float yield = (float)projectedRent / Mathf.Max(1, finalPrice);
@@ -2140,10 +2142,8 @@ void Start()
     {
         ClearHighlights();
 
-        // Actual
         HighlightTile(board.GetTile(pl.boardIndex), currentColor, ref lastCurrent);
 
-        // Destino (horario = sumar pasos)
         int destIndex = Wrap(pl.boardIndex + steps);
         HighlightTile(board.GetTile(destIndex), previewColor, ref lastPreview);
     }
@@ -2174,17 +2174,17 @@ void Start()
         if (txtP1) txtP1.text = $"J1: ${dinero1}";
         if (txtP2) txtP2.text = $"J2: ${dinero2}";
     }
+
     // --- Toast helper ---
     void ShowToast(string text, float time = 3f)
     {
         if (toast) toast.Show(text, time);
     }
-    // Manda un mensaje al pop-up (toast) durante 'time' segundos
     void ToastStatus(string msg, float time = 3f)
     {
         ShowToast(msg, time);
     }
-    // Helpers que usaremos después (compras, alquiler, etc.)
+
     public void AddMoney(int playerIndex, int amount)
     {
         if (playerIndex == 0) dinero1 += amount;
@@ -2202,13 +2202,10 @@ void Start()
         return true;
     }
 
-    // Paga "amount" al banco. Si no alcanza, paga lo que tenga (queda en 0).
     void PayToBank(int player, int amount)
     {
-        // Si alcanza, listo
         if (SpendMoney(player, amount)) return;
 
-        // Si NO alcanza, paga todo lo que tenga (queda en 0)
         int cur = (player == 0) ? dinero1 : dinero2;
         if (cur > 0)
         {
@@ -2218,35 +2215,30 @@ void Start()
         Debug.Log("No alcanzó para impuesto; se pagó parcial.");
     }
 
-    // Si no alcanza el dinero, paga lo que tenga (v1 simple).
     void PayPlayerToPlayer(int from, int to, int amount)
     {
         if (from == to) return;
 
-        // Intento pagar completo con el helper
         if (SpendMoney(from, amount))
         {
             AddMoney(to, amount);
             return;
         }
 
-        // Si no alcanzó, paga lo que haya (parcial) y queda en 0
         int cur = (from == 0) ? dinero1 : dinero2;
         if (cur > 0)
         {
             if (from == 0) dinero1 -= cur;
             else dinero2 -= cur;
 
-            AddMoney(to, cur); // AddMoney ya refresca la UI
+            AddMoney(to, cur);
         }
 
         Debug.Log("No alcanza para pagar renta (v1). Se pagó parcial.");
     }
 
-    // Dinero actual del jugador
     int GetMoney(int player) => (player == 0) ? dinero1 : dinero2;
 
-    // Lista de propiedades (impares) del owner
     List<int> GetOwnedProps(int owner)
     {
         var list = new List<int>();
@@ -2254,6 +2246,7 @@ void Start()
             if (ownerByTile[i] == owner) list.Add(i);
         return list;
     }
+
     void ApplyRobberyResult(int jugador, RobberyUI.RobberyResult rr)
     {
         int rival = (jugador == 0) ? 1 : 0;
@@ -2299,7 +2292,6 @@ void Start()
 
             case RobberyUI.RobberyCardType.Double15:
                 {
-                    // En 2 jugadores: 15% + 15% = 30% del rival
                     int amount = Mathf.RoundToInt(GetMoney(rival) * 0.30f);
                     PayPlayerToPlayer(rival, jugador, amount);
                     ToastStatus($"Robo doble: +${amount} (30% del rival).", 3f);
@@ -2333,7 +2325,6 @@ void Start()
         }
     }
 
-    // Devuelve una propiedad MEJORADA del owner al azar (o -1 si no hay)
     int GetRandomUpgradedProp(int owner)
     {
         var ups = new List<int>();
@@ -2343,7 +2334,6 @@ void Start()
         return ups[Random.Range(0, ups.Count)];
     }
 
-    // ← PEGA AQUÍ (sigue dentro de GameManager)
     int MateOf(int idx)
     {
         switch (idx)
