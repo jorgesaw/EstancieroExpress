@@ -379,9 +379,40 @@ public class GameManager : MonoBehaviour
     bool esperandoDecision = false; // para pausar el flujo hasta que elija en el modal
 
     Tile lastCurrent, lastPreview;
+    // === Logger helper global (usable desde cualquier método) ===
+    void LG(string tag, string msg)
+    {
+        Debug.Log($"[GM][{tag}] {msg}");
+    }
 
     void Start()
     {
+        IEnumerator WaitAndBindTokens()
+        {
+            // Busca por nombre de objeto instanciado por Photon (según tus prefabs)
+            // NOTA: Los nombres quedan como "P1Token(Clone)" y "P2Token(Clone)"
+            var t0 = Time.time;
+            while ((p1 == null || p2 == null) && Time.time - t0 < 10f)
+            {
+                if (p1 == null)
+                {
+                    var go1 = GameObject.Find("P1Token(Clone)");
+                    if (go1) p1 = go1.GetComponent<PlayerToken>();
+                }
+                if (p2 == null)
+                {
+                    var go2 = GameObject.Find("P2Token(Clone)");
+                    if (go2) p2 = go2.GetComponent<PlayerToken>();
+                }
+                yield return null;
+            }
+
+            if (p1 != null) p1.boardIndex = 0;
+            if (p2 != null) p2.boardIndex = 0;
+
+            Debug.Log($"[GM][BIND] Cliente vinculación → p1={(p1 != null)} p2={(p2 != null)}");
+        }
+
         // === ONLINE (setup base) ===
         pv = GetComponent<PhotonView>();
         isMaster = PhotonNetwork.IsMasterClient;
@@ -441,12 +472,48 @@ public class GameManager : MonoBehaviour
             PlayerPrefs.DeleteKey("MODE");
         }
 
-        // === Instanciar fichas en la salida (índice 0) con una leve separación
+        // === Instanciar / Vincular fichas (online vs local) ===
         Vector3 start = board.PathPositions[0];
-        p1 = Instantiate(player1Prefab, start + new Vector3(-0.35f, 0, 0), Quaternion.identity);
-        p2 = Instantiate(player2Prefab, start + new Vector3(0.35f, 0, 0), Quaternion.identity);
-        p1.boardIndex = 0;
-        p2.boardIndex = 0;
+
+        // Log helper local
+        LG("INFO", $"Start() esOnline={esOnline} modo={modoActual} isMaster={isMaster}");
+
+        // Seguridad: asegurarnos de tener un PhotonView en este GameObject (para RPCs)
+        pv = pv ?? GetComponent<PhotonView>();
+        if (pv == null) LG("WARN", "No hay PhotonView en GameManager. Agrega el componente a este objeto en MainScene.");
+
+        // --- ONLINE 1 vs 1: el MASTER crea AMBAS fichas por red ---
+        if (esOnline && modoActual == 3)
+        {
+            if (isMaster)
+            {
+                LG("SPAWN", "Master creando P1Token y P2Token por PhotonNetwork.Instantiate...");
+                var go1 = PhotonNetwork.Instantiate("Prefabs/P1Token", start + new Vector3(-0.35f, 0, 0), Quaternion.identity);
+                var go2 = PhotonNetwork.Instantiate("Prefabs/P2Token", start + new Vector3(0.35f, 0, 0), Quaternion.identity);
+
+                p1 = go1.GetComponent<PlayerToken>();
+                p2 = go2.GetComponent<PlayerToken>();
+                if (p1) p1.boardIndex = 0;
+                if (p2) p2.boardIndex = 0;
+
+                LG("SPAWN", $"Master OK → p1={p1 != null}, p2={p2 != null}");
+            }
+            else
+            {
+                // Cliente: no crea nada. Espera a que aparezcan y los vincula.
+                LG("WAIT", "Cliente esperando a que el Master cree las fichas...");
+                StartCoroutine(WaitAndBindTokens());
+            }
+        }
+        else
+        {
+            // --- LOCAL (vs CPU o 2 jugadores en el mismo dispositivo) ---
+            LG("SPAWN", "Modo local → Instantiate normal de P1/P2");
+            p1 = Instantiate(player1Prefab, start + new Vector3(-0.35f, 0, 0), Quaternion.identity);
+            p2 = Instantiate(player2Prefab, start + new Vector3(0.35f, 0, 0), Quaternion.identity);
+            p1.boardIndex = 0;
+            p2.boardIndex = 0;
+        }
 
         // === Turno inicial ===
         if (esOnline && modoActual == 3)
@@ -487,7 +554,10 @@ public class GameManager : MonoBehaviour
 
         // === ONLINE (1 vs 1): al arrancar, el MASTER envía un primer snapshot
         if (esOnline && modoActual == 3 && isMaster)
+        {
+            LG("SYNC", "Master envía snapshot inicial");
             NetSyncALL();
+        }
     }
 
     void OnDestroy()
@@ -497,9 +567,11 @@ public class GameManager : MonoBehaviour
 
     void OnTirar()
     {
+        LG("BTN", $"OnTirar click → isMaster={isMaster}, turno={turno}, indiceLocal={indiceLocal}, moving={IsMovingAny()}");
         // En 1vs1 online: si no soy master, solo pido tirar y salgo
         if (esOnline && modoActual == 3 && !isMaster)
         {
+            LG("NET", "Cliente pide tirar → RPC_RequestRoll al Master");
             pv.RPC("RPC_RequestRoll", RpcTarget.MasterClient);
             return;
         }
@@ -1749,6 +1821,7 @@ public class GameManager : MonoBehaviour
     // Llama el MASTER al terminar su jugada (o al entrar a la sala)
     void NetSyncALL()
     {
+        LG("SYNC", $"Master sincroniza → turno={turno}, p1={p1?.boardIndex}, p2={p2?.boardIndex}, d1={dinero1}, d2={dinero2}");
         // Paquetes simples para RPC (primitivos y arrays)
         int p1Idx = (p1 != null) ? p1.boardIndex : 0;
         int p2Idx = (p2 != null) ? p2.boardIndex : 0;
@@ -1773,23 +1846,27 @@ public class GameManager : MonoBehaviour
     [PunRPC]
     void RPC_RequestRoll()
     {
-        // Este RPC SOLO lo recibe el master. Ejecuta la tirada localmente.
+        LG("NET", "Master recibió pedido de tirar → ejecuta OnTirar()");
         if (!isMaster) return;
         OnTirar();
     }
 
     [PunRPC]
     void RPC_Snapshot(
-        int turnoRemote, int p1Idx, int p2Idx, int d1, int d2,
-        int[] owners, bool[] ups, int[] sk, bool[] disc,
-        int[] rmType, int[] rmLaps, int[] rmExp, bool[] rmArm
-    )
+    int turnoRemote, int p1Idx, int p2Idx, int d1, int d2,
+    int[] owners, bool[] ups, int[] sk, bool[] disc,
+    int[] rmType, int[] rmLaps, int[] rmExp, bool[] rmArm
+)
     {
-        // Aplicar datos de estado
+        // Log al entrar al método
+        Debug.Log($"[GM][SNAP] Recibido snapshot: turno={turnoRemote}, p1={p1Idx}, p2={p2Idx}, d1={d1}, d2={d2}");
+
+        // ===== Aplicar datos de estado básicos =====
         turno = turnoRemote;
         dinero1 = d1;
         dinero2 = d2;
 
+        // Arrays (redimensionar si hace falta y copiar)
         if (ownerByTile == null || ownerByTile.Length != owners.Length)
             ownerByTile = new int[owners.Length];
         System.Array.Copy(owners, ownerByTile, owners.Length);
@@ -1804,6 +1881,7 @@ public class GameManager : MonoBehaviour
         hasDiscount[0] = disc[0];
         hasDiscount[1] = disc[1];
 
+        // Rent mods
         rentMod[0] = (RentMod)rmType[0];
         rentMod[1] = (RentMod)rmType[1];
         rentModLapsLeft[0] = rmLaps[0];
@@ -1813,13 +1891,13 @@ public class GameManager : MonoBehaviour
         rentModArmed[0] = rmArm[0];
         rentModArmed[1] = rmArm[1];
 
-        // Teletransportar fichas a índices recibidos (sin animación)
+        // ===== Teletransportar fichas a los índices recibidos (sin animación) =====
         if (p1 != null)
             p1.TeleportTo(board.PathPositions[p1Idx], p1Idx);
         if (p2 != null)
             p2.TeleportTo(board.PathPositions[p2Idx], p2Idx);
 
-        // Repintar marcas de dueño en el tablero según ownerByTile[]
+        // ===== Repintar marcas de dueño en el tablero =====
         for (int i = 1; i < board.TileCount; i++)
         {
             var t = board.GetTile(i);
@@ -1837,15 +1915,18 @@ public class GameManager : MonoBehaviour
             }
         }
 
-        // UI
+        // ===== UI =====
         UpdateMoneyUI();
         UpdateTurnUI();
         HighlightCurrentOnly();
 
-        // IMPORTANTE: habilitar botón Tirar en el CLIENTE tras snapshot inicial
+        // En el CLIENTE, habilitar "Tirar" tras snapshot inicial (si corresponde)
         if (esOnline && modoActual == 3 && !isMaster && btnTirar)
             btnTirar.interactable = true;
+
+        Debug.Log("[GM][SNAP] Aplicado snapshot → UI/Highlighters actualizados. Cliente habilita botón si corresponde.");
     }
+
     // =================== FIN SINCRONIZACIÓN ONLINE (1 vs 1) ====================
 
     void UpdateTurnUI()
